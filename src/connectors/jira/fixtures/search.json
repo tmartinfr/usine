@@ -1,0 +1,29 @@
+{
+  "issues": [
+    {
+      "id": "10001",
+      "key": "PAY-123",
+      "fields": {
+        "summary": "Fix the payment retry loop",
+        "status": { "name": "In Progress", "statusCategory": { "key": "indeterminate" } },
+        "priority": { "name": "High", "id": "2" },
+        "project": { "key": "PAY", "name": "Payments" },
+        "issuetype": { "name": "Bug" },
+        "updated": "2026-10-10T12:34:56.789+0200"
+      }
+    },
+    {
+      "id": "10002",
+      "key": "OPS-7",
+      "fields": {
+        "summary": "Rotate staging certificates",
+        "status": { "name": "To Do" },
+        "priority": null,
+        "project": { "key": "OPS", "name": "Operations" },
+        "issuetype": { "name": "Task" },
+        "updated": "2026-10-01T08:00:00.000+0000"
+      }
+    }
+  ],
+  "isLast": true
+}
