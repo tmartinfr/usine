@@ -155,6 +155,7 @@ mod tests {
             source: Source::Jira,
             key: key.into(),
             title: title.into(),
+            status_category: usine::model::StatusCategory::InProgress,
             status: "In Progress".into(),
             priority: priority.map(Into::into),
             project: "PAY".into(),

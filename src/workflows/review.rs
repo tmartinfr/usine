@@ -160,7 +160,7 @@ mod tests {
 
         let start = Instant::now();
         let screen = loop {
-            let screen = tmux.capture(&name).unwrap();
+            let screen = tmux.capture(&name, false).unwrap();
             if screen.contains("group-api-mr-7") || start.elapsed() > Duration::from_secs(5) {
                 break screen;
             }

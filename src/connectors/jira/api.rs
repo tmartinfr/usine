@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use chrono::DateTime;
 use serde::Deserialize;
 
-use crate::model::{Issue, Source};
+use crate::model::{Issue, Source, StatusCategory};
 
 /// Fields requested from `/rest/api/3/search/jql`; must match `Fields` below.
 pub const FIELDS: &str = "summary,status,priority,project,issuetype,updated";
@@ -27,11 +27,24 @@ pub struct RawIssue {
 #[derive(Debug, Deserialize)]
 pub struct Fields {
     pub summary: String,
-    pub status: Named,
+    pub status: Status,
     pub priority: Option<Named>,
     pub project: Project,
     pub issuetype: Named,
     pub updated: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    pub name: String,
+    pub status_category: Option<CategoryKey>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CategoryKey {
+    /// `new`, `indeterminate` or `done`.
+    pub key: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +74,11 @@ impl RawIssue {
             url: format!("{base_url}/browse/{}", self.key),
             key: self.key,
             title: self.fields.summary,
+            status_category: match self.fields.status.status_category.as_ref().map(|c| c.key.as_str()) {
+                Some("indeterminate") => StatusCategory::InProgress,
+                Some("done") => StatusCategory::Done,
+                _ => StatusCategory::Todo,
+            },
             status: self.fields.status.name,
             priority: self.fields.priority.map(|p| p.name),
             project: self.fields.project.key,
@@ -93,6 +111,7 @@ mod tests {
         assert_eq!(first.key, "PAY-123");
         assert_eq!(first.title, "Fix the payment retry loop");
         assert_eq!(first.status, "In Progress");
+        assert_eq!(first.status_category, StatusCategory::InProgress);
         assert_eq!(first.priority.as_deref(), Some("High"));
         assert_eq!(first.project, "PAY");
         assert_eq!(first.kind, "Bug");
@@ -100,5 +119,6 @@ mod tests {
         assert_eq!(first.updated.to_rfc3339(), "2026-10-10T12:34:56.789+02:00");
 
         assert_eq!(issues[1].priority, None);
+        assert_eq!(issues[1].status_category, StatusCategory::Todo);
     }
 }

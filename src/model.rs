@@ -10,12 +10,22 @@ pub enum Source {
     Gitlab,
 }
 
+/// Coarse progress of an issue, comparable across trackers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusCategory {
+    Todo,
+    InProgress,
+    Done,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Issue {
     pub source: Source,
     pub key: String,
     pub title: String,
     pub status: String,
+    pub status_category: StatusCategory,
     pub priority: Option<String>,
     pub project: String,
     pub kind: String,

@@ -15,6 +15,26 @@ pub struct Session {
     pub finished: bool,
 }
 
+/// Whether `line` shows nothing, ignoring ANSI escape sequences.
+fn is_blank(line: &str) -> bool {
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Skip `ESC [ params final-byte`.
+            if chars.next() == Some('[') {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else if !c.is_whitespace() {
+            return false;
+        }
+    }
+    true
+}
+
 /// Thin wrapper over the `tmux` CLI.
 #[derive(Debug, Clone, Default)]
 pub struct Tmux {
@@ -80,17 +100,23 @@ impl Tmux {
             .collect())
     }
 
-    /// Recent content of the session's active pane (screen plus some history), as
-    /// plain text with runs of blank lines collapsed and trailing blank lines removed.
-    pub fn capture(&self, name: &str) -> Result<String> {
-        let text = self.run(&["capture-pane", "-p", "-S", "-200", "-t", &format!("={name}:")])?;
+    /// Recent content of the session's active pane (screen plus some history), with
+    /// runs of blank lines collapsed and trailing blank lines removed. With `colors`,
+    /// lines keep their ANSI color and style sequences.
+    pub fn capture(&self, name: &str, colors: bool) -> Result<String> {
+        let target = format!("={name}:");
+        let mut args = vec!["capture-pane", "-p", "-S", "-200", "-t", &target];
+        if colors {
+            args.push("-e");
+        }
+        let text = self.run(&args)?;
         let mut lines: Vec<&str> = Vec::new();
         for line in text.lines().map(str::trim_end) {
-            if !(line.is_empty() && lines.last().is_some_and(|l| l.is_empty())) {
+            if !(is_blank(line) && lines.last().is_some_and(|l| is_blank(l))) {
                 lines.push(line);
             }
         }
-        while lines.last().is_some_and(|l| l.is_empty()) {
+        while lines.last().is_some_and(|l| is_blank(l)) {
             lines.pop();
         }
         Ok(lines.join("\n"))
@@ -136,5 +162,17 @@ impl Tmux {
             );
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_blank;
+
+    #[test]
+    fn blank_lines_ignore_escape_sequences() {
+        assert!(is_blank(""));
+        assert!(is_blank("  \x1b[0m \x1b[38;5;246m"));
+        assert!(!is_blank("\x1b[1mhello\x1b[0m"));
     }
 }

@@ -109,13 +109,41 @@ pub enum Action {
     CloseReview(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warning,
+    Error,
+}
+
+/// Transient message shown in the footer until the next key press.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub level: Level,
+    pub text: String,
+}
+
+impl Notice {
+    pub fn info(text: impl Into<String>) -> Self {
+        Self { level: Level::Info, text: text.into() }
+    }
+
+    pub fn warning(text: impl Into<String>) -> Self {
+        Self { level: Level::Warning, text: text.into() }
+    }
+
+    pub fn error(text: impl Into<String>) -> Self {
+        Self { level: Level::Error, text: text.into() }
+    }
+}
+
 pub enum Msg {
     Jira(Result<Vec<Issue>, String>),
     Gitlab(Result<Vec<MergeRequest>, String>),
     Reviews(Vec<Session>),
     Preview { session: String, text: String },
     ReviewStarted { mr: String, result: Result<String, String> },
-    Message(String),
+    Notice(Notice),
 }
 
 pub struct App {
@@ -124,8 +152,7 @@ pub struct App {
     pub focus: Focus,
     pub config_path: String,
     pub last_update: Option<DateTime<Local>>,
-    /// Transient message shown in the footer (e.g. browser launch failure).
-    pub message: Option<String>,
+    pub message: Option<Notice>,
     /// Review sessions, running or finished; `subject` is the MR reference.
     pub reviews: Vec<Session>,
     /// MR references whose review is being set up.
@@ -191,15 +218,18 @@ impl App {
                 self.starting.retain(|r| *r != mr);
                 match result {
                     Ok(name) => {
-                        self.message = Some(format!("Review of {mr} started, press a to attach"));
+                        self.message =
+                            Some(Notice::info(format!("Review of {mr} started, press a to attach")));
                         if !self.reviews.iter().any(|s| s.name == name) {
                             self.reviews.push(Session { name, subject: mr, finished: false });
                         }
                     }
-                    Err(err) => self.message = Some(format!("Cannot review {mr}: {err}")),
+                    Err(err) => {
+                        self.message = Some(Notice::error(format!("Cannot review {mr}: {err}")));
+                    }
                 }
             }
-            Msg::Message(message) => self.message = Some(message),
+            Msg::Notice(notice) => self.message = Some(notice),
         }
     }
 
@@ -233,7 +263,8 @@ impl App {
                 return match self.selected_review() {
                     Some(review) => Action::Attach(review.name.clone()),
                     None => {
-                        self.message = Some("No review for this MR, press v to start one".into());
+                        self.message =
+                            Some(Notice::warning("No review for this MR, press v to start one"));
                         Action::None
                     }
                 };
@@ -245,7 +276,7 @@ impl App {
                     }
                     Some(_) => {
                         self.message =
-                            Some("Review still running: press X to close it anyway".into());
+                            Some(Notice::warning("Review still running: press X to close it anyway"));
                         Action::None
                     }
                     None => Action::None,
@@ -261,11 +292,11 @@ impl App {
             return Action::None;
         };
         if self.review_of(&mr.reference).is_some() {
-            self.message = Some("This MR already has a review, press a to attach".into());
+            self.message = Some(Notice::warning("This MR already has a review, press a to attach"));
             return Action::None;
         }
         if self.starting.contains(&mr.reference) {
-            self.message = Some("Review already starting".into());
+            self.message = Some(Notice::warning("Review already starting"));
             return Action::None;
         }
         self.starting.push(mr.reference.clone());
@@ -292,6 +323,7 @@ pub mod tests {
             source: Source::Jira,
             key: key.into(),
             title: format!("Summary of {key}"),
+            status_category: usine::model::StatusCategory::Todo,
             status: "To Do".into(),
             priority: None,
             project: "PAY".into(),
@@ -456,7 +488,7 @@ pub mod tests {
         assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::StartReview(mr(2)));
         assert_eq!(app.starting, ["group/project!2"]);
         assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
-        assert_eq!(app.message.as_deref(), Some("Review already starting"));
+        assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("Review already starting"));
 
         app.on_msg(Msg::ReviewStarted {
             mr: "group/project!2".into(),
@@ -465,7 +497,7 @@ pub mod tests {
         assert!(app.starting.is_empty());
         assert_eq!(app.selected_review(), Some(&session(2, false)));
         assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
-        assert!(app.message.as_deref().unwrap().contains("press a to attach"));
+        assert!(app.message.as_ref().map(|m| m.text.as_str()).unwrap().contains("press a to attach"));
     }
 
     #[test]
@@ -479,7 +511,7 @@ pub mod tests {
         });
         assert!(app.starting.is_empty());
         assert_eq!(app.selected_review(), None);
-        assert_eq!(app.message.as_deref(), Some("Cannot review group/project!1: no local clone"));
+        assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("Cannot review group/project!1: no local clone"));
     }
 
     #[test]

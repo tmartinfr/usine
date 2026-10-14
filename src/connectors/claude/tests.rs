@@ -47,8 +47,13 @@ fn starts_lists_captures_and_kills_sessions() {
         tmux.sessions("usine-").unwrap(),
         [Session { name: "usine-review-g-p-1".into(), subject: "g/p!1".into(), finished: false }]
     );
-    wait_for(|| tmux.capture("usine-review-g-p-1").unwrap().contains("hello"));
-    let screen = tmux.capture("usine-review-g-p-1").unwrap();
+    wait_for(|| tmux.capture("usine-review-g-p-1", false).unwrap().contains("hello"));
+    tmux.start("usine-color", "", cwd.path(), &sh("printf '\\033[31mred\\033[0m\\n'; sleep 30")).unwrap();
+    wait_for(|| tmux.capture("usine-color", false).unwrap().contains("red"));
+    assert_eq!(tmux.capture("usine-color", false).unwrap(), "red");
+    assert!(tmux.capture("usine-color", true).unwrap().contains("\x1b[31mred"));
+    tmux.kill("usine-color").unwrap();
+    let screen = tmux.capture("usine-review-g-p-1", false).unwrap();
     let cwd_name = cwd.path().file_name().unwrap().to_str().unwrap();
     assert!(screen.contains(cwd_name), "{screen}");
 
@@ -66,7 +71,7 @@ fn keeps_finished_sessions_visible() {
         .unwrap();
 
     wait_for(|| tmux.sessions("usine-").unwrap()[0].finished);
-    let screen = tmux.capture("usine-x").unwrap();
+    let screen = tmux.capture("usine-x", false).unwrap();
     assert!(screen.starts_with("command not found\n\nPane is dead"), "{screen:?}");
 }
 
@@ -77,6 +82,6 @@ fn errors_on_unknown_session() {
     let cwd = tempfile::tempdir().unwrap();
     tmux.start("usine-a", "a", cwd.path(), &sh("sleep 30")).unwrap();
 
-    assert!(tmux.capture("usine-missing").is_err());
+    assert!(tmux.capture("usine-missing", false).is_err());
     assert!(tmux.kill("usine-missing").is_err());
 }

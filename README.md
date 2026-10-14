@@ -74,9 +74,9 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 
 ```
 + Jira issues (2) ------------------------------------------------------------+
-|KEY      STATUS       UPDATED     SUMMARY                                     |
-|PAY-123  In Progress  2026-10-10  Fix the payment retry loop                  |
-|OPS-7    To Do        2026-10-01  Rotate staging certificates                 |
+|KEY      STATUS       PRIORITY  UPDATED     SUMMARY                           |
+|PAY-123  In Progress  High      2026-10-10  Fix the payment retry loop        |
+|OPS-7    To Do        -         2026-10-01  Rotate staging certificates       |
 +-----------------------------------------------------------------------------+
 + GitLab MRs (1) -------------------------------------------------------------+
 |R  MR                    STATUS        UPDATED     TITLE                      |
@@ -102,6 +102,15 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `x`                     | Close a finished review (GitLab pane)               |
 | `X`                     | Close a review even if Claude is still running (GitLab pane) |
 | `q` / `Esc` / `Ctrl-C`  | Quit                                                |
+
+Colors help scanning the panes:
+
+- Jira status: blue for to do, yellow for in progress, green for done. Priority: red for high and above, yellow for medium, green or blue for low.
+- GitLab status: green when the merge request can be merged, yellow while waiting (checks running, approvals missing), red when blocked (conflicts, failed pipeline, unresolved threads...). Draft merge requests are greyed out.
+- Review marker: green while Claude is running, blue once finished, yellow while starting.
+- Dates of the last 24 hours are highlighted, older ones are greyed out.
+- The Review pane keeps the colors of the Claude session.
+- Messages at the bottom are green (done), yellow (nothing done, e.g. a review already exists) or red (error).
 
 The title of a pane shows `(refreshing)` while new data is being loaded, and the bottom line shows the time of the last successful update. Messages (e.g. why a review could not start) replace the key help until the next key press.
 
@@ -161,6 +170,7 @@ JSON output (one object per issue):
   "key": "PAY-123",
   "title": "Fix the payment retry loop",
   "status": "In Progress",
+  "status_category": "in_progress",
   "priority": "High",
   "project": "PAY",
   "kind": "Bug",
@@ -169,7 +179,7 @@ JSON output (one object per issue):
 }
 ```
 
-`priority` is `null` when the issue has none.
+`status_category` is `todo`, `in_progress` or `done`. `priority` is `null` when the issue has none.
 
 ### GitLab: list my open merge requests
 

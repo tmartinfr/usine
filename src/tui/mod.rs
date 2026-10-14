@@ -23,7 +23,7 @@ use usine::connectors::jira::JiraClient;
 use usine::model::MergeRequest;
 use usine::workflows::review;
 
-use app::{Action, App, Msg};
+use app::{Action, App, Msg, Notice};
 
 const LIMIT: usize = 100;
 const AUTO_REFRESH: Duration = Duration::from_secs(5 * 60);
@@ -86,7 +86,7 @@ impl Sources {
             // tmux missing or failing: no review to show.
             let _ = tx.send(Msg::Reviews(review::list_reviews(&tmux).unwrap_or_default()));
             if let Some(session) = selected
-                && let Ok(text) = tmux.capture(&session)
+                && let Ok(text) = tmux.capture(&session, true)
             {
                 let _ = tx.send(Msg::Preview { session, text });
             }
@@ -114,7 +114,7 @@ impl Sources {
         let (tmux, tx) = (self.tmux.clone(), tx.clone());
         tokio::task::spawn_blocking(move || {
             if let Err(err) = tmux.kill(&session) {
-                let _ = tx.send(Msg::Message(format!("{err:#}")));
+                let _ = tx.send(Msg::Notice(Notice::error(format!("{err:#}"))));
             }
         });
     }
@@ -169,13 +169,13 @@ fn event_loop(
                 Action::Refresh => refresh = true,
                 Action::Open(url) => {
                     if let Err(err) = open_in_browser(&url) {
-                        app.message = Some(format!("cannot open {url}: {err}"));
+                        app.message = Some(Notice::error(format!("cannot open {url}: {err}")));
                     }
                 }
                 Action::StartReview(mr) => sources.start_review(mr, tx),
                 Action::Attach(session) => {
                     if let Err(err) = attach(terminal, &sources.tmux, &session) {
-                        app.message = Some(format!("{err:#}"));
+                        app.message = Some(Notice::error(format!("{err:#}")));
                     }
                     last_poll = None;
                 }
