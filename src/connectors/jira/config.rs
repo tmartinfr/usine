@@ -11,6 +11,13 @@ pub struct JiraConfig {
     pub jql: Option<String>,
 }
 
+impl JiraConfig {
+    /// The configured `jql`, or `DEFAULT_JQL`.
+    pub fn effective_jql(&self) -> &str {
+        self.jql.as_deref().unwrap_or(super::DEFAULT_JQL)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::Config;
@@ -31,6 +38,22 @@ mod tests {
         assert_eq!(jira.email, "me@example.com");
         assert_eq!(jira.api_token, "secret");
         assert!(jira.jql.is_none());
+        assert_eq!(jira.effective_jql(), crate::connectors::jira::DEFAULT_JQL);
+    }
+
+    #[test]
+    fn configured_jql_overrides_default() {
+        let config = Config::parse(
+            r#"
+            [jira]
+            url = "https://example.atlassian.net"
+            email = "me@example.com"
+            api_token = "secret"
+            jql = "project = PAY"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.jira.unwrap().effective_jql(), "project = PAY");
     }
 
     #[test]

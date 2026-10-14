@@ -1,4 +1,5 @@
 mod cli;
+mod tui;
 
 use std::process::ExitCode;
 

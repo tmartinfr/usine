@@ -1,6 +1,6 @@
 # usine
 
-`usine` is a software factory orchestrator: one place to see your work across the tools you use every day. It is a command-line tool today; terminal and web interfaces are planned.
+`usine` is a software factory orchestrator: one place to see your work across the tools you use every day. It comes with an interactive terminal interface and scriptable commands; a web interface is planned.
 
 Supported connectors so far:
 
@@ -42,10 +42,50 @@ The file holds credentials: restrict it with `chmod 600 ~/.config/usine/config.t
 ## Usage
 
 ```
-usine [--config <PATH>] <COMMAND>
+usine [--config <PATH>] [<COMMAND>]
 ```
 
-`--config` is accepted anywhere on the command line. Every command supports `--help`.
+Without a command, `usine` starts the interactive terminal interface. `--config` is accepted anywhere on the command line. Every command supports `--help`.
+
+### Terminal interface
+
+```
+usine
+usine tui
+```
+
+The screen shows two panes, one above the other:
+
+- **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`.
+
+Up to 100 items are shown per pane. Data is loaded in the background when the interface starts, then refreshed automatically every 5 minutes. A pane whose connector is not configured shows which config section is missing; a pane whose source fails shows the error, while the other pane keeps working.
+
+```
++ Jira issues (2) ------------------------------------------------------------+
+|KEY      STATUS       UPDATED     SUMMARY                                     |
+|PAY-123  In Progress  2026-10-10  Fix the payment retry loop                  |
+|OPS-7    To Do        2026-10-01  Rotate staging certificates                 |
++-----------------------------------------------------------------------------+
++ GitLab MRs (1) -------------------------------------------------------------+
+|MR                    STATUS        UPDATED     TITLE                         |
+|group/backend/api!42  not_approved  2026-10-10  Add retry on payment webhook  |
++-----------------------------------------------------------------------------+
+ Tab: switch  j/k: move  g/G: first/last  Enter: open  r: refresh  q: quit  updated 11:42
+```
+
+| Key                     | Action                                              |
+|-------------------------|-----------------------------------------------------|
+| `Tab` / `Shift-Tab`     | Switch between the two panes                        |
+| `j` / `Down`            | Next row                                            |
+| `k` / `Up`              | Previous row                                        |
+| `g` / `Home`            | First row                                           |
+| `G` / `End`             | Last row                                            |
+| `Enter`                 | Open the selected issue or merge request in your browser |
+| `r`                     | Refresh both panes now                              |
+| `q` / `Esc` / `Ctrl-C`  | Quit                                                |
+
+The title of a pane shows `(refreshing)` while new data is being loaded, and the bottom line shows the time of the last successful update.
 
 ### Jira: list issues
 

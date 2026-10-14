@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use usine::config::Config;
-use usine::connectors::jira::{DEFAULT_JQL, JiraClient};
+use usine::connectors::jira::JiraClient;
 
 #[derive(Debug, Subcommand)]
 pub enum JiraCommand {
@@ -30,7 +30,7 @@ pub async fn run(command: JiraCommand, config: &Config, config_path: &Path) -> R
 
     match command {
         JiraCommand::Issues { jql, limit, json } => {
-            let jql = jql.as_deref().or(jira.jql.as_deref()).unwrap_or(DEFAULT_JQL);
+            let jql = jql.as_deref().unwrap_or(jira.effective_jql());
             let issues = client.search(jql, limit).await?;
             super::print_issues(&issues, json)
         }

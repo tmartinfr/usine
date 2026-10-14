@@ -1,4 +1,5 @@
 //! Command-line front end: argument parsing and plain-text rendering.
+//! Without a subcommand, starts the TUI.
 
 mod gitlab;
 mod jira;
@@ -18,7 +19,7 @@ pub struct Cli {
     config: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -33,6 +34,8 @@ enum Command {
         #[command(subcommand)]
         command: jira::JiraCommand,
     },
+    /// Interactive terminal UI (default when no command is given)
+    Tui,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
@@ -42,8 +45,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     };
     let config = Config::load(&path)?;
     match cli.command {
-        Command::Gitlab { command } => gitlab::run(command, &config, &path).await,
-        Command::Jira { command } => jira::run(command, &config, &path).await,
+        Some(Command::Gitlab { command }) => gitlab::run(command, &config, &path).await,
+        Some(Command::Jira { command }) => jira::run(command, &config, &path).await,
+        Some(Command::Tui) | None => crate::tui::run(config, &path),
     }
 }
 

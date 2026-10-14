@@ -7,6 +7,7 @@ use crate::model::Issue;
 /// Jira Cloud caps `maxResults` at 100 for `/search/jql`.
 const MAX_PAGE_SIZE: usize = 100;
 
+#[derive(Clone)]
 pub struct JiraClient {
     http: reqwest::Client,
     base_url: String,

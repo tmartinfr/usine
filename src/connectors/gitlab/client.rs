@@ -7,6 +7,7 @@ use crate::model::MergeRequest;
 /// GitLab caps `per_page` at 100.
 const MAX_PAGE_SIZE: usize = 100;
 
+#[derive(Clone)]
 pub struct GitlabClient {
     http: reqwest::Client,
     base_url: String,
