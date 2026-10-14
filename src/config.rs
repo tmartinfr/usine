@@ -5,13 +5,26 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::connectors::claude::ClaudeConfig;
+use crate::connectors::git::GitConfig;
 use crate::connectors::gitlab::GitlabConfig;
 use crate::connectors::jira::JiraConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub claude: ClaudeConfig,
+    pub git: Option<GitConfig>,
     pub gitlab: Option<GitlabConfig>,
     pub jira: Option<JiraConfig>,
+}
+
+/// Expands a leading `~/` to the home directory.
+pub fn expand_home(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(path),
+    }
 }
 
 impl Config {

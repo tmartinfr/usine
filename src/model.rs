@@ -10,7 +10,7 @@ pub enum Source {
     Gitlab,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Issue {
     pub source: Source,
     pub key: String,
@@ -23,12 +23,14 @@ pub struct Issue {
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MergeRequest {
     pub source: Source,
     /// `group/project!123`
     pub reference: String,
     pub project: String,
+    /// Number of the MR within its project.
+    pub iid: u64,
     pub title: String,
     pub draft: bool,
     pub merge_status: String,

@@ -8,8 +8,9 @@ Supported connectors so far:
 |-----------|-------------------------------------------------------|
 | Jira      | List issues (default: unresolved, assigned to me)     |
 | GitLab    | List open merge requests authored by me               |
+| Claude    | Review a merge request in its own git worktree, from the terminal interface |
 
-Planned: GitHub, Linear, Claude instances, git worktrees.
+Planned: GitHub, Linear.
 
 ## Installation
 
@@ -35,6 +36,15 @@ api_token = "..."                      # https://id.atlassian.com > Security > A
 [gitlab]
 token = "glpat-..."                    # personal access token, read_api scope
 # url = "https://gitlab.example.com"   # optional, defaults to https://gitlab.com
+
+[git]                                  # needed to review merge requests
+roots = ["~/git"]                      # where your local clones live (searched 3 levels deep)
+# worktrees_dir = "~/reviews"          # optional, defaults to ~/.local/share/usine/worktrees
+
+[claude]                               # optional, defaults shown
+command = "claude"
+args = []                              # extra arguments, e.g. ["--model", "opus"]
+review_prompt = "Review the GitLab merge request {url}. Its code is checked out in the current directory; the target branch is origin/{target_branch}."
 ```
 
 The file holds credentials: restrict it with `chmod 600 ~/.config/usine/config.toml`.
@@ -54,10 +64,11 @@ usine
 usine tui
 ```
 
-The screen shows two panes, one above the other:
+The screen shows three panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
-- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`.
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`. The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
+- **Review**: the live screen of the Claude review of the merge request selected in the GitLab pane.
 
 Up to 100 items are shown per pane. Data is loaded in the background when the interface starts, then refreshed automatically every 5 minutes. A pane whose connector is not configured shows which config section is missing; a pane whose source fails shows the error, while the other pane keeps working.
 
@@ -68,10 +79,13 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 |OPS-7    To Do        2026-10-01  Rotate staging certificates                 |
 +-----------------------------------------------------------------------------+
 + GitLab MRs (1) -------------------------------------------------------------+
-|MR                    STATUS        UPDATED     TITLE                         |
-|group/backend/api!42  not_approved  2026-10-10  Add retry on payment webhook  |
+|R  MR                    STATUS        UPDATED     TITLE                      |
+|*  group/backend/api!42  not_approved  2026-10-10  Add retry on payment we... |
 +-----------------------------------------------------------------------------+
- Tab: switch  j/k: move  g/G: first/last  Enter: open  r: refresh  q: quit  updated 11:42
++ Review group/backend/api!42 [running]  a: attach ---------------------------+
+| * Reading the diff of group/backend/api!42...                               |
++-----------------------------------------------------------------------------+
+ Tab: switch  j/k: move  Enter: open  r: refresh  v: review  a: attach  x: close  q: quit
 ```
 
 | Key                     | Action                                              |
@@ -83,9 +97,27 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `G` / `End`             | Last row                                            |
 | `Enter`                 | Open the selected issue or merge request in your browser |
 | `r`                     | Refresh both panes now                              |
+| `v`                     | Start a Claude review of the selected merge request (GitLab pane) |
+| `a`                     | Attach to the review of the selected merge request (GitLab pane) |
+| `x`                     | Close a finished review (GitLab pane)               |
+| `X`                     | Close a review even if Claude is still running (GitLab pane) |
 | `q` / `Esc` / `Ctrl-C`  | Quit                                                |
 
-The title of a pane shows `(refreshing)` while new data is being loaded, and the bottom line shows the time of the last successful update.
+The title of a pane shows `(refreshing)` while new data is being loaded, and the bottom line shows the time of the last successful update. Messages (e.g. why a review could not start) replace the key help until the next key press.
+
+### Reviewing a merge request with Claude
+
+Select a merge request in the GitLab pane and press `v`. usine then:
+
+1. finds your local clone of the project under the `roots` of the `[git]` section;
+2. fetches the merge request and its target branch, and checks the merge request out in a dedicated git worktree (`<worktrees_dir>/<project>-mr-<number>`); the files and branches of your clone are not changed;
+3. starts Claude Code in that worktree with the review prompt, inside a background tmux session.
+
+The Review pane shows what Claude is doing. Press `a` to attach to the session and interact with Claude (answer its questions, approve actions, ask for changes); detach with `Ctrl-b d` to come back to usine. If usine itself runs inside tmux, `a` switches your tmux client to the review session instead; switch back with your usual tmux keys.
+
+Reviews keep running when you quit usine and show up again when you restart it. When Claude exits, its last screen stays visible and the review is marked `[finished]`; press `x` to close it. Closing a review does not delete its worktree, so starting a new review of the same merge request reuses and updates it.
+
+Requirements: [tmux](https://github.com/tmux/tmux) and [Claude Code](https://claude.com/claude-code) installed, a local clone of the project (with `origin` pointing to GitLab), and SSH access to GitLab without a passphrase prompt (e.g. via ssh-agent).
 
 ### Jira: list issues
 
@@ -176,6 +208,7 @@ JSON output (one object per merge request):
   "source": "gitlab",
   "reference": "group/backend/api!42",
   "project": "group/backend/api",
+  "iid": 42,
   "title": "Add retry on payment webhook",
   "draft": false,
   "merge_status": "not_approved",

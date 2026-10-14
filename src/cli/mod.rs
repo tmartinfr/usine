@@ -184,6 +184,7 @@ mod tests {
             source: Source::Gitlab,
             reference: "group/project!42".into(),
             project: "group/project".into(),
+            iid: 42,
             title: "Add retry".into(),
             draft: false,
             merge_status: "mergeable".into(),

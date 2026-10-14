@@ -3,6 +3,7 @@
 use chrono::{DateTime, Local};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
+use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest};
 
 /// Something a pane can list and open in a browser.
@@ -54,6 +55,10 @@ impl<T: Item> Pane<T> {
         }
     }
 
+    pub fn selected(&self) -> Option<&T> {
+        self.items().get(self.table.selected()?)
+    }
+
     fn start_loading(&mut self) {
         if !matches!(self.content, Content::NotConfigured) {
             self.loading = true;
@@ -83,11 +88,6 @@ impl<T: Item> Pane<T> {
         let index = target(current, len).clamp(0, len as isize - 1);
         self.table.select(Some(index as usize));
     }
-
-    fn selected_url(&self) -> Option<String> {
-        let index = self.table.selected()?;
-        self.items().get(index).map(|item| item.url().to_string())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,17 +96,26 @@ pub enum Focus {
     Gitlab,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub enum Action {
     None,
     Quit,
     Refresh,
     Open(String),
+    StartReview(MergeRequest),
+    /// Attach the terminal to this tmux session.
+    Attach(String),
+    /// Kill this tmux session.
+    CloseReview(String),
 }
 
 pub enum Msg {
     Jira(Result<Vec<Issue>, String>),
     Gitlab(Result<Vec<MergeRequest>, String>),
+    Reviews(Vec<Session>),
+    Preview { session: String, text: String },
+    ReviewStarted { mr: String, result: Result<String, String> },
+    Message(String),
 }
 
 pub struct App {
@@ -117,6 +126,12 @@ pub struct App {
     pub last_update: Option<DateTime<Local>>,
     /// Transient message shown in the footer (e.g. browser launch failure).
     pub message: Option<String>,
+    /// Review sessions, running or finished; `subject` is the MR reference.
+    pub reviews: Vec<Session>,
+    /// MR references whose review is being set up.
+    pub starting: Vec<String>,
+    /// Last captured screen of a review session: (session name, text).
+    pub preview: Option<(String, String)>,
 }
 
 impl App {
@@ -128,6 +143,9 @@ impl App {
             config_path,
             last_update: None,
             message: None,
+            reviews: Vec::new(),
+            starting: Vec::new(),
+            preview: None,
         }
     }
 
@@ -136,21 +154,52 @@ impl App {
         self.gitlab.start_loading();
     }
 
+    pub fn review_of(&self, mr_reference: &str) -> Option<&Session> {
+        self.reviews.iter().find(|s| s.subject == mr_reference)
+    }
+
+    /// Review session of the MR selected in the GitLab pane.
+    pub fn selected_review(&self) -> Option<&Session> {
+        self.review_of(&self.gitlab.selected()?.reference)
+    }
+
+    /// Captured screen of `session`, if any.
+    pub fn preview_of(&self, session: &str) -> Option<&str> {
+        match &self.preview {
+            Some((name, text)) if name == session => Some(text),
+            _ => None,
+        }
+    }
+
     pub fn on_msg(&mut self, msg: Msg) {
-        let ok = match msg {
+        match msg {
             Msg::Jira(result) => {
-                let ok = result.is_ok();
+                if result.is_ok() {
+                    self.last_update = Some(Local::now());
+                }
                 self.jira.set_result(result);
-                ok
             }
             Msg::Gitlab(result) => {
-                let ok = result.is_ok();
+                if result.is_ok() {
+                    self.last_update = Some(Local::now());
+                }
                 self.gitlab.set_result(result);
-                ok
             }
-        };
-        if ok {
-            self.last_update = Some(Local::now());
+            Msg::Reviews(reviews) => self.reviews = reviews,
+            Msg::Preview { session, text } => self.preview = Some((session, text)),
+            Msg::ReviewStarted { mr, result } => {
+                self.starting.retain(|r| *r != mr);
+                match result {
+                    Ok(name) => {
+                        self.message = Some(format!("Review of {mr} started, press a to attach"));
+                        if !self.reviews.iter().any(|s| s.name == name) {
+                            self.reviews.push(Session { name, subject: mr, finished: false });
+                        }
+                    }
+                    Err(err) => self.message = Some(format!("Cannot review {mr}: {err}")),
+                }
+            }
+            Msg::Message(message) => self.message = Some(message),
         }
     }
 
@@ -170,8 +219,8 @@ impl App {
             }
             KeyCode::Enter => {
                 let url = match self.focus {
-                    Focus::Jira => self.jira.selected_url(),
-                    Focus::Gitlab => self.gitlab.selected_url(),
+                    Focus::Jira => self.jira.selected().map(|i| i.url().to_string()),
+                    Focus::Gitlab => self.gitlab.selected().map(|m| m.url().to_string()),
                 };
                 return url.map_or(Action::None, Action::Open);
             }
@@ -179,9 +228,48 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.select(|current, _| current as isize - 1),
             KeyCode::Char('g') | KeyCode::Home => self.select(|_, _| 0),
             KeyCode::Char('G') | KeyCode::End => self.select(|_, len| len as isize - 1),
+            KeyCode::Char('v') if self.focus == Focus::Gitlab => return self.start_review(),
+            KeyCode::Char('a') if self.focus == Focus::Gitlab => {
+                return match self.selected_review() {
+                    Some(review) => Action::Attach(review.name.clone()),
+                    None => {
+                        self.message = Some("No review for this MR, press v to start one".into());
+                        Action::None
+                    }
+                };
+            }
+            KeyCode::Char(c @ ('x' | 'X')) if self.focus == Focus::Gitlab => {
+                return match self.selected_review() {
+                    Some(review) if review.finished || c == 'X' => {
+                        Action::CloseReview(review.name.clone())
+                    }
+                    Some(_) => {
+                        self.message =
+                            Some("Review still running: press X to close it anyway".into());
+                        Action::None
+                    }
+                    None => Action::None,
+                };
+            }
             _ => {}
         }
         Action::None
+    }
+
+    fn start_review(&mut self) -> Action {
+        let Some(mr) = self.gitlab.selected().cloned() else {
+            return Action::None;
+        };
+        if self.review_of(&mr.reference).is_some() {
+            self.message = Some("This MR already has a review, press a to attach".into());
+            return Action::None;
+        }
+        if self.starting.contains(&mr.reference) {
+            self.message = Some("Review already starting".into());
+            return Action::None;
+        }
+        self.starting.push(mr.reference.clone());
+        Action::StartReview(mr)
     }
 
     fn select(&mut self, target: impl FnOnce(usize, usize) -> isize) {
@@ -218,6 +306,7 @@ pub mod tests {
             source: Source::Gitlab,
             reference: format!("group/project!{iid}"),
             project: "group/project".into(),
+            iid: iid.into(),
             title: format!("MR {iid}"),
             draft: false,
             merge_status: "mergeable".into(),
@@ -226,6 +315,14 @@ pub mod tests {
             author: "me".into(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: format!("https://gitlab.com/group/project/-/merge_requests/{iid}"),
+        }
+    }
+
+    pub fn session(iid: u32, finished: bool) -> Session {
+        Session {
+            name: format!("usine-review-group-project-{iid}"),
+            subject: format!("group/project!{iid}"),
+            finished,
         }
     }
 
@@ -340,5 +437,74 @@ pub mod tests {
         app.start_refresh();
         assert!(app.jira.loading);
         assert!(!app.gitlab.loading);
+    }
+
+    #[test]
+    fn review_keys_only_act_on_gitlab_pane() {
+        let mut app = loaded_app();
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(app.on_key(key(KeyCode::Char('a'))), Action::None);
+        assert!(app.starting.is_empty());
+    }
+
+    #[test]
+    fn v_starts_a_review_once() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Char('j')));
+
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::StartReview(mr(2)));
+        assert_eq!(app.starting, ["group/project!2"]);
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(app.message.as_deref(), Some("Review already starting"));
+
+        app.on_msg(Msg::ReviewStarted {
+            mr: "group/project!2".into(),
+            result: Ok("usine-review-group-project-2".into()),
+        });
+        assert!(app.starting.is_empty());
+        assert_eq!(app.selected_review(), Some(&session(2, false)));
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert!(app.message.as_deref().unwrap().contains("press a to attach"));
+    }
+
+    #[test]
+    fn failed_start_is_reported() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Char('v')));
+        app.on_msg(Msg::ReviewStarted {
+            mr: "group/project!1".into(),
+            result: Err("no local clone".into()),
+        });
+        assert!(app.starting.is_empty());
+        assert_eq!(app.selected_review(), None);
+        assert_eq!(app.message.as_deref(), Some("Cannot review group/project!1: no local clone"));
+    }
+
+    #[test]
+    fn attach_and_close_selected_review() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.on_key(key(KeyCode::Char('a'))), Action::None);
+        assert!(app.message.is_some());
+
+        app.on_msg(Msg::Reviews(vec![session(1, false)]));
+        let name = session(1, false).name;
+        assert_eq!(app.on_key(key(KeyCode::Char('a'))), Action::Attach(name.clone()));
+        // A running review needs X to be closed.
+        assert_eq!(app.on_key(key(KeyCode::Char('x'))), Action::None);
+        assert_eq!(app.on_key(key(KeyCode::Char('X'))), Action::CloseReview(name.clone()));
+
+        app.on_msg(Msg::Reviews(vec![session(1, true)]));
+        assert_eq!(app.on_key(key(KeyCode::Char('x'))), Action::CloseReview(name));
+    }
+
+    #[test]
+    fn preview_is_matched_by_session() {
+        let mut app = loaded_app();
+        app.on_msg(Msg::Preview { session: "a".into(), text: "screen".into() });
+        assert_eq!(app.preview_of("a"), Some("screen"));
+        assert_eq!(app.preview_of("b"), None);
     }
 }

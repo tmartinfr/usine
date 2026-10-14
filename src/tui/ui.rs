@@ -10,9 +10,14 @@ use usine::model::{Issue, MergeRequest};
 use super::app::{App, Content, Focus, Item, Pane};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let [top, bottom, footer] = Layout::vertical([
+    let review_height = match app.selected_review() {
+        Some(_) => Constraint::Fill(2),
+        None => Constraint::Length(3),
+    };
+    let [top, middle, bottom, footer] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Fill(1),
+        review_height,
         Constraint::Length(1),
     ])
     .areas(frame.area());
@@ -23,53 +28,62 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         PaneView {
             title: "Jira issues",
             section: "[jira]",
-            header: ["KEY", "STATUS", "UPDATED", "SUMMARY"],
-            row: issue_row,
+            header: &["KEY", "STATUS", "UPDATED", "SUMMARY"],
+            row: &issue_row,
             focused: app.focus == Focus::Jira,
             config_path: &app.config_path,
         },
         &mut app.jira,
     );
+    let (reviews, starting) = (&app.reviews, &app.starting);
+    let merge_request_row = |mr: &MergeRequest| {
+        let marker = if starting.contains(&mr.reference) {
+            "~"
+        } else if reviews.iter().any(|s| s.subject == mr.reference) {
+            "*"
+        } else {
+            " "
+        };
+        vec![
+            marker.to_string(),
+            mr.reference.clone(),
+            mr.merge_status.clone(),
+            mr.updated.format("%Y-%m-%d").to_string(),
+            mr.title.clone(),
+        ]
+    };
     render_pane(
         frame,
-        bottom,
+        middle,
         PaneView {
             title: "GitLab MRs",
             section: "[gitlab]",
-            header: ["MR", "STATUS", "UPDATED", "TITLE"],
-            row: merge_request_row,
+            header: &["R", "MR", "STATUS", "UPDATED", "TITLE"],
+            row: &merge_request_row,
             focused: app.focus == Focus::Gitlab,
             config_path: &app.config_path,
         },
         &mut app.gitlab,
     );
+    render_review(frame, bottom, app);
     render_footer(frame, footer, app);
 }
 
 struct PaneView<'a, T> {
     title: &'a str,
     section: &'a str,
-    header: [&'a str; 4],
-    row: fn(&T) -> [String; 4],
+    header: &'a [&'a str],
+    row: &'a dyn Fn(&T) -> Vec<String>,
     focused: bool,
     config_path: &'a str,
 }
 
-fn issue_row(issue: &Issue) -> [String; 4] {
-    [
+fn issue_row(issue: &Issue) -> Vec<String> {
+    vec![
         issue.key.clone(),
         issue.status.clone(),
         issue.updated.format("%Y-%m-%d").to_string(),
         issue.title.clone(),
-    ]
-}
-
-fn merge_request_row(mr: &MergeRequest) -> [String; 4] {
-    [
-        mr.reference.clone(),
-        mr.merge_status.clone(),
-        mr.updated.format("%Y-%m-%d").to_string(),
-        mr.title.clone(),
     ]
 }
 
@@ -81,12 +95,7 @@ fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: 
     if pane.loading {
         title.push_str("(refreshing) ");
     }
-    let border = if view.focused {
-        Style::new().fg(Color::Cyan)
-    } else {
-        Style::new().fg(Color::DarkGray)
-    };
-    let block = Block::bordered().title(title).border_style(border);
+    let block = Block::bordered().title(title).border_style(border_style(view.focused));
 
     let items = match &pane.content {
         Content::Loaded(items) if !items.is_empty() => items,
@@ -105,43 +114,86 @@ fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: 
         }
     };
 
-    let rows: Vec<[String; 4]> = items.iter().map(view.row).collect();
-    let mut widths = view.header.map(|h| h.chars().count());
+    let rows: Vec<Vec<String>> = items.iter().map(view.row).collect();
+    let mut widths: Vec<usize> = view.header.iter().map(|h| h.chars().count()).collect();
     for row in &rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
         }
     }
-    let constraints = [
-        Constraint::Length(widths[0] as u16),
-        Constraint::Length(widths[1] as u16),
-        Constraint::Length(widths[2] as u16),
-        Constraint::Fill(1),
-    ];
+    // Every column fits its content, except the last one which takes the rest.
+    let last = widths.len() - 1;
+    let constraints = widths.iter().enumerate().map(|(i, &w)| match i {
+        i if i == last => Constraint::Fill(1),
+        _ => Constraint::Length(w as u16),
+    });
     let highlight = if view.focused {
         Style::new().add_modifier(Modifier::REVERSED)
     } else {
         Style::new()
     };
     let table = Table::new(rows.into_iter().map(Row::new), constraints)
-        .header(Row::new(view.header).bold())
+        .header(Row::new(view.header.iter().copied()).bold())
         .column_spacing(2)
         .row_highlight_style(highlight)
         .block(block);
     frame.render_stateful_widget(table, area, &mut pane.table);
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
-    let mut spans = vec![Span::raw(
-        " Tab: switch  j/k: move  g/G: first/last  Enter: open  r: refresh  q: quit",
-    )];
-    if let Some(message) = &app.message {
-        spans.push(Span::raw("  "));
-        spans.push(Span::raw(message.as_str()).red());
-    } else if let Some(at) = app.last_update {
-        spans.push(Span::raw(format!("  updated {}", at.format("%H:%M"))).dark_gray());
+fn border_style(focused: bool) -> Style {
+    if focused {
+        Style::new().fg(Color::Cyan)
+    } else {
+        Style::new().fg(Color::DarkGray)
     }
-    frame.render_widget(Line::from(spans), area);
+}
+
+/// Live view of the review session of the selected MR.
+fn render_review(frame: &mut Frame, area: Rect, app: &App) {
+    let block = Block::bordered().border_style(border_style(false));
+    let Some(mr) = app.gitlab.selected() else {
+        frame.render_widget(Paragraph::new("No merge request selected.").block(block.title(" Review ")), area);
+        return;
+    };
+    let Some(review) = app.selected_review() else {
+        let text = if app.starting.contains(&mr.reference) {
+            "Preparing the worktree and starting Claude..."
+        } else {
+            "No review for this MR. Press v to start one."
+        };
+        let title = format!(" Review {} ", mr.reference);
+        frame.render_widget(Paragraph::new(text).block(block.title(title)), area);
+        return;
+    };
+
+    let state = if review.finished { "finished" } else { "running" };
+    let title = format!(" Review {} [{state}]  a: attach ", mr.reference);
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let text = app.preview_of(&review.name).unwrap_or("");
+    // Show the end of the session screen, like a terminal would.
+    let lines: Vec<Line> = text
+        .lines()
+        .skip(text.lines().count().saturating_sub(inner_height))
+        .map(Line::from)
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block.title(title)), area);
+}
+
+/// Key help, replaced by the last message until the next key press.
+fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+    let line = match &app.message {
+        Some(message) => Line::from(format!(" {message}")).red(),
+        None => {
+            let mut spans = vec![Span::raw(
+                " Tab: switch  j/k: move  Enter: open  r: refresh  v: review  a: attach  x: close  q: quit",
+            )];
+            if let Some(at) = app.last_update {
+                spans.push(Span::raw(format!("  updated {}", at.format("%H:%M"))).dark_gray());
+            }
+            Line::from(spans)
+        }
+    };
+    frame.render_widget(line, area);
 }
 
 #[cfg(test)]
@@ -151,10 +203,10 @@ mod tests {
 
     use super::*;
     use crate::tui::app::Msg;
-    use crate::tui::app::tests::{issue, mr};
+    use crate::tui::app::tests::{issue, mr, session};
 
     fn draw(app: &mut App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
         terminal.draw(|frame| render(frame, app)).unwrap();
         let buffer = terminal.backend().buffer();
         buffer
@@ -205,5 +257,34 @@ mod tests {
 
         let screen = draw(&mut app);
         assert!(screen.contains("Jira issues (1) (refreshing)"), "{screen}");
+    }
+
+    #[test]
+    fn renders_review_preview_of_selected_mr() {
+        let mut app = App::new(false, true, "config.toml".into());
+        app.on_msg(Msg::Gitlab(Ok(vec![mr(1), mr(2)])));
+        app.on_msg(Msg::Reviews(vec![session(1, false)]));
+        let lines: Vec<String> = (1..=40).map(|i| format!("claude line {i}")).collect();
+        app.on_msg(Msg::Preview { session: session(1, false).name, text: lines.join("\n") });
+
+        let screen = draw(&mut app);
+        assert!(screen.contains("Review group/project!1 [running]"), "{screen}");
+        assert!(screen.contains("*  group/project!1"), "{screen}");
+        // The end of the session screen is shown.
+        assert!(screen.contains("claude line 40"), "{screen}");
+        assert!(!screen.contains("claude line 1 "), "{screen}");
+    }
+
+    #[test]
+    fn renders_review_placeholders() {
+        let mut app = App::new(false, true, "config.toml".into());
+        app.on_msg(Msg::Gitlab(Ok(vec![mr(1)])));
+        let screen = draw(&mut app);
+        assert!(screen.contains("No review for this MR. Press v to start one."), "{screen}");
+
+        app.starting.push("group/project!1".into());
+        let screen = draw(&mut app);
+        assert!(screen.contains("~  group/project!1"), "{screen}");
+        assert!(screen.contains("Preparing the worktree"), "{screen}");
     }
 }

@@ -7,6 +7,7 @@ use crate::model::{MergeRequest, Source};
 
 #[derive(Debug, Deserialize)]
 pub struct RawMergeRequest {
+    pub iid: u64,
     pub title: String,
     pub web_url: String,
     pub draft: bool,
@@ -45,6 +46,7 @@ impl RawMergeRequest {
             source: Source::Gitlab,
             reference: self.references.full,
             project,
+            iid: self.iid,
             title: self.title,
             draft: self.draft,
             merge_status: self.detailed_merge_status,
@@ -73,6 +75,7 @@ mod tests {
         assert_eq!(first.source, Source::Gitlab);
         assert_eq!(first.reference, "paylead/backend/api!42");
         assert_eq!(first.project, "paylead/backend/api");
+        assert_eq!(first.iid, 42);
         assert_eq!(first.title, "Add retry on payment webhook");
         assert!(!first.draft);
         assert_eq!(first.merge_status, "not_approved");
