@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::connectors::gitlab::GitlabConfig;
 use crate::connectors::jira::JiraConfig;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
+    pub gitlab: Option<GitlabConfig>,
     pub jira: Option<JiraConfig>,
 }
 

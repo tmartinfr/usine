@@ -1,5 +1,6 @@
 //! Command-line front end: argument parsing and plain-text rendering.
 
+mod gitlab;
 mod jira;
 
 use std::path::PathBuf;
@@ -7,7 +8,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use usine::config::Config;
-use usine::model::Issue;
+use usine::model::{Issue, MergeRequest};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Software factory orchestrator")]
@@ -22,6 +23,11 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// GitLab
+    Gitlab {
+        #[command(subcommand)]
+        command: gitlab::GitlabCommand,
+    },
     /// Jira Cloud
     Jira {
         #[command(subcommand)]
@@ -36,6 +42,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     };
     let config = Config::load(&path)?;
     match cli.command {
+        Command::Gitlab { command } => gitlab::run(command, &config, &path).await,
         Command::Jira { command } => jira::run(command, &config, &path).await,
     }
 }
@@ -54,41 +61,71 @@ fn print_issues(issues: &[Issue], json: bool) -> Result<()> {
 }
 
 fn issues_table(issues: &[Issue]) -> String {
-    let header = ["KEY", "TYPE", "STATUS", "PRIORITY", "UPDATED"];
-    let rows: Vec<[String; 5]> = issues
+    let rows: Vec<Vec<String>> = issues
         .iter()
         .map(|i| {
-            [
+            vec![
                 i.key.clone(),
                 i.kind.clone(),
                 i.status.clone(),
                 i.priority.clone().unwrap_or_else(|| "-".into()),
                 i.updated.format("%Y-%m-%d").to_string(),
+                i.title.clone(),
             ]
         })
         .collect();
+    table(&["KEY", "TYPE", "STATUS", "PRIORITY", "UPDATED", "SUMMARY"], &rows)
+}
 
-    let mut widths = header.map(|h| h.chars().count());
-    for row in &rows {
+fn print_merge_requests(mrs: &[MergeRequest], json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(mrs)?);
+    } else if mrs.is_empty() {
+        println!("No merge requests.");
+    } else {
+        print!("{}", merge_requests_table(mrs));
+    }
+    Ok(())
+}
+
+fn merge_requests_table(mrs: &[MergeRequest]) -> String {
+    let rows: Vec<Vec<String>> = mrs
+        .iter()
+        .map(|m| {
+            vec![
+                m.reference.clone(),
+                m.merge_status.clone(),
+                m.target_branch.clone(),
+                m.updated.format("%Y-%m-%d").to_string(),
+                m.title.clone(),
+            ]
+        })
+        .collect();
+    table(&["MR", "STATUS", "TARGET", "UPDATED", "TITLE"], &rows)
+}
+
+/// Left-aligned columns; the last one is truncated so lines fit in `MAX_WIDTH`.
+fn table(header: &[&str], rows: &[Vec<String>]) -> String {
+    let (fixed, _) = header.split_at(header.len() - 1);
+    let mut widths: Vec<usize> = fixed.iter().map(|h| h.chars().count()).collect();
+    for row in rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
         }
     }
-    let summary_width = MAX_WIDTH
+    let last_width = MAX_WIDTH
         .saturating_sub(widths.iter().map(|w| w + 2).sum())
         .max(20);
 
     let mut out = String::new();
-    let mut push_line = |cells: [&str; 5], summary: &str| {
-        for (cell, width) in cells.iter().zip(widths) {
+    let header: Vec<String> = header.iter().map(|h| h.to_string()).collect();
+    for row in std::iter::once(&header).chain(rows) {
+        let (last, cells) = row.split_last().expect("rows are not empty");
+        for (cell, width) in cells.iter().zip(&widths) {
             out.push_str(&format!("{cell:<width$}  "));
         }
-        out.push_str(&truncate(summary, summary_width));
+        out.push_str(&truncate(last, last_width));
         out.push('\n');
-    };
-    push_line(header, "SUMMARY");
-    for (row, issue) in rows.iter().zip(issues) {
-        push_line(row.each_ref().map(String::as_str), &issue.title);
     }
     out
 }
@@ -134,6 +171,28 @@ mod tests {
             "KEY       TYPE  STATUS       PRIORITY  UPDATED     SUMMARY\n\
              PAY-1     Bug   In Progress  High      2026-10-10  Short\n\
              PAY-1234  Bug   In Progress  -         2026-10-10  Other\n"
+        );
+    }
+
+    #[test]
+    fn renders_merge_requests_table() {
+        let mr = MergeRequest {
+            source: Source::Gitlab,
+            reference: "group/project!42".into(),
+            project: "group/project".into(),
+            title: "Add retry".into(),
+            draft: false,
+            merge_status: "mergeable".into(),
+            source_branch: "feat".into(),
+            target_branch: "main".into(),
+            author: "thomas".into(),
+            updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
+            url: "https://gitlab.com/group/project/-/merge_requests/42".into(),
+        };
+        assert_eq!(
+            merge_requests_table(&[mr]),
+            "MR                STATUS     TARGET  UPDATED     TITLE\n\
+             group/project!42  mergeable  main    2026-10-10  Add retry\n"
         );
     }
 

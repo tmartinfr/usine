@@ -7,6 +7,7 @@ use serde::Serialize;
 #[serde(rename_all = "lowercase")]
 pub enum Source {
     Jira,
+    Gitlab,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -18,6 +19,22 @@ pub struct Issue {
     pub priority: Option<String>,
     pub project: String,
     pub kind: String,
+    pub updated: DateTime<FixedOffset>,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeRequest {
+    pub source: Source,
+    /// `group/project!123`
+    pub reference: String,
+    pub project: String,
+    pub title: String,
+    pub draft: bool,
+    pub merge_status: String,
+    pub source_branch: String,
+    pub target_branch: String,
+    pub author: String,
     pub updated: DateTime<FixedOffset>,
     pub url: String,
 }

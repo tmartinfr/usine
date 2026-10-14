@@ -1,0 +1,32 @@
+[
+  {
+    "id": 9001,
+    "iid": 42,
+    "project_id": 100,
+    "title": "Add retry on payment webhook",
+    "state": "opened",
+    "draft": false,
+    "detailed_merge_status": "not_approved",
+    "source_branch": "feat/webhook-retry",
+    "target_branch": "main",
+    "updated_at": "2026-10-10T12:34:56.789Z",
+    "author": { "id": 1, "username": "thomas", "name": "Thomas Martin" },
+    "references": { "short": "!42", "relative": "!42", "full": "paylead/backend/api!42" },
+    "web_url": "https://gitlab.com/paylead/backend/api/-/merge_requests/42"
+  },
+  {
+    "id": 9002,
+    "iid": 7,
+    "project_id": 200,
+    "title": "Draft: Bump dependencies",
+    "state": "opened",
+    "draft": true,
+    "detailed_merge_status": "draft_status",
+    "source_branch": "chore/deps",
+    "target_branch": "develop",
+    "updated_at": "2026-10-01T08:00:00.000+02:00",
+    "author": { "id": 1, "username": "thomas", "name": "Thomas Martin" },
+    "references": { "short": "!7", "relative": "!7", "full": "paylead/infra!7" },
+    "web_url": "https://gitlab.com/paylead/infra/-/merge_requests/7"
+  }
+]
