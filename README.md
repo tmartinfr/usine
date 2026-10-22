@@ -102,7 +102,8 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `a`                     | Attach to the review of the selected merge request (GitLab pane) |
 | `x`                     | Close a finished review (GitLab pane)               |
 | `X`                     | Close a review even if Claude is still running (GitLab pane) |
-| `q` / `Esc` / `Ctrl-C`  | Quit                                                |
+| `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
+| `Ctrl-C`                | Quit immediately                                    |
 
 Press `s` to sort the focused pane: the header of a column is highlighted; move it with `h` / `Left` and `l` / `Right`, then press `Enter` to sort on that column. Choosing the column the pane is already sorted on reverses the order, so `s` then `Enter` flips the current sort. `Esc` (or `s` again) cancels. The sort column shows `^` (ascending) or `v` (descending) next to its name, the selected row stays selected, and the sort is kept when the pane refreshes. Until you choose a sort, items are listed in the order of the source (most recently updated first).
 

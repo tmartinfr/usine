@@ -193,6 +193,8 @@ pub struct App {
     pub preview: Option<(String, String)>,
     /// Column being chosen to sort the focused pane on.
     pub sorting: Option<usize>,
+    /// `q` was pressed, waiting for confirmation.
+    pub confirm_quit: bool,
 }
 
 impl App {
@@ -208,6 +210,7 @@ impl App {
             starting: Vec::new(),
             preview: None,
             sorting: None,
+            confirm_quit: false,
         }
     }
 
@@ -272,11 +275,21 @@ impl App {
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         self.message = None;
+        if self.confirm_quit {
+            self.confirm_quit = false;
+            return match key.code {
+                KeyCode::Char('y' | 'q') => Action::Quit,
+                _ => Action::None,
+            };
+        }
         if let Some(column) = self.sorting {
             return self.on_sort_key(key, column);
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Action::Quit,
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.confirm_quit = true;
+                self.message = Some(Notice::warning("Quit usine? y: yes, any other key: no"));
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Action::Quit;
             }
@@ -525,13 +538,32 @@ pub mod tests {
     #[test]
     fn quit_and_refresh_keys() {
         let mut app = loaded_app();
+        assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::None);
+        assert!(app.message.as_ref().unwrap().text.starts_with("Quit usine?"));
+        assert_eq!(app.on_key(key(KeyCode::Char('y'))), Action::Quit);
+        app.on_key(key(KeyCode::Esc));
         assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::Quit);
-        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
         assert_eq!(
             app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             Action::Quit
         );
         assert_eq!(app.on_key(key(KeyCode::Char('r'))), Action::Refresh);
+    }
+
+    #[test]
+    fn any_other_key_cancels_quit() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Char('q')));
+        assert_eq!(app.on_key(key(KeyCode::Char('n'))), Action::None);
+        assert!(!app.confirm_quit);
+        assert_eq!(app.message, None);
+        // The cancelling key is not acted upon.
+        app.on_key(key(KeyCode::Char('q')));
+        assert_eq!(app.on_key(key(KeyCode::Char('j'))), Action::None);
+        assert_eq!(app.jira.table.selected(), Some(0));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.confirm_quit);
     }
 
     #[test]
