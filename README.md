@@ -7,7 +7,7 @@ Supported connectors so far:
 | Connector | What it can do                                        |
 |-----------|-------------------------------------------------------|
 | Jira      | List issues (default: unresolved, assigned to me)     |
-| GitLab    | List open merge requests authored by me               |
+| GitLab    | List open merge requests authored by me, with their pipeline status; the terminal interface also shows those I review and have not approved yet |
 | Claude    | Review a merge request in its own git worktree, from the terminal interface |
 
 Planned: GitHub, Linear.
@@ -67,7 +67,7 @@ usine tui
 The screen shows three panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
-- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`. The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard), most recently updated first. The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
 - **Review**: the live screen of the Claude review of the merge request selected in the GitLab pane.
 
 Up to 100 items are shown per pane. Data is loaded in the background when the interface starts, then refreshed automatically every 5 minutes. A pane whose connector is not configured shows which config section is missing; a pane whose source fails shows the error, while the other pane keeps working.
@@ -78,9 +78,10 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 |PAY-123  In Progress  High      2026-10-10  Fix the payment retry loop        |
 |OPS-7    To Do        -         2026-10-01  Rotate staging certificates       |
 +-----------------------------------------------------------------------------+
-+ GitLab MRs (1) -------------------------------------------------------------+
-|R  MR                    STATUS        UPDATED     TITLE                      |
-|*  group/backend/api!42  not_approved  2026-10-10  Add retry on payment we... |
++ GitLab MRs (2) -------------------------------------------------------------+
+|R  ROLE      MR                    STATUS        PIPELINE  UPDATED     TITLE  |
+|*  author    group/backend/api!42  not_approved  running   2026-10-10  Add... |
+|   reviewer  group/web!310         mergeable     success   2026-10-09  Upd... |
 +-----------------------------------------------------------------------------+
 + Review group/backend/api!42 [running]  a: attach ---------------------------+
 | * Reading the diff of group/backend/api!42...                               |
@@ -113,8 +114,10 @@ Ascending order means:
 - `STATUS` (Jira): to do, in progress, done, then by status name.
 - `PRIORITY`: most important first, issues without priority last.
 - `R`: running reviews, starting, finished, then merge requests without review.
+- `ROLE`: authored first, then those you review.
 - `MR`: by project, then by number.
 - `STATUS` (GitLab): mergeable, waiting, blocked, draft, then by status name.
+- `PIPELINE`: passed, in progress or waiting, failed, canceled or skipped, then merge requests without pipeline.
 - `UPDATED`: oldest first.
 - `SUMMARY` / `TITLE`: alphabetical, ignoring case.
 
@@ -122,6 +125,8 @@ Colors help scanning the panes:
 
 - Jira status: blue for to do, yellow for in progress, green for done. Priority: red for high and above, yellow for medium, green or blue for low.
 - GitLab status: green when the merge request can be merged, yellow while waiting (checks running, approvals missing), red when blocked (conflicts, failed pipeline, unresolved threads...). Draft merge requests are greyed out.
+- Pipeline: green when passed, yellow while running or waiting (pending, manual...), red when failed, grey when canceled or skipped.
+- Role: `reviewer` is highlighted in light blue, `author` is greyed out.
 - Review marker: green while Claude is running, blue once finished, yellow while starting.
 - Dates of the last 24 hours are highlighted, older ones are greyed out.
 - The Review pane keeps the colors of the Claude session.
@@ -219,12 +224,14 @@ usine gitlab mrs --json | jq -r '.[] | select(.draft | not) | .url'
 Table output:
 
 ```
-MR                     STATUS        TARGET   UPDATED     TITLE
-group/backend/api!42   not_approved  main     2026-10-10  Add retry on payment webhook
-group/infra!7          draft_status  develop  2026-10-01  Draft: Bump dependencies
+MR                    STATUS        PIPELINE  TARGET   UPDATED     TITLE
+group/backend/api!42  not_approved  running   main     2026-10-10  Add retry on payment webhook
+group/infra!7         draft_status  -         develop  2026-10-01  Draft: Bump dependencies
 ```
 
 `STATUS` is the merge status reported by GitLab (e.g. `mergeable`, `not_approved`, `draft_status`). It often shows `unchecked` until the merge request is opened in the GitLab web UI.
+
+`PIPELINE` is the status of the latest pipeline of the merge request as reported by GitLab (e.g. `success`, `running`, `pending`, `manual`, `failed`, `canceled`), or `-` when it has none. Getting it takes one extra request per merge request.
 
 JSON output (one object per merge request):
 
@@ -237,13 +244,17 @@ JSON output (one object per merge request):
   "title": "Add retry on payment webhook",
   "draft": false,
   "merge_status": "not_approved",
+  "pipeline": "running",
   "source_branch": "feat/webhook-retry",
   "target_branch": "main",
   "author": "me",
+  "role": "author",
   "updated": "2026-10-10T12:34:56.789+00:00",
   "url": "https://gitlab.com/group/backend/api/-/merge_requests/42"
 }
 ```
+
+`pipeline` is `null` when the merge request has no pipeline. `role` is always `author` for this command.
 
 ### Output and errors
 

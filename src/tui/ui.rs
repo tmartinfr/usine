@@ -7,10 +7,12 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
-use usine::model::{Issue, MergeRequest, StatusCategory};
+use usine::model::{Issue, MergeRequest, Role, StatusCategory};
 
 use super::app::{App, Content, Focus, Item, Level, Pane, review_state};
-use super::sort::{ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, merge_readiness, priority_rank};
+use super::sort::{
+    ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, merge_readiness, pipeline_rank, priority_rank,
+};
 
 /// Color of focused borders, titles and key hints.
 const ACCENT: Color = Color::Cyan;
@@ -57,10 +59,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             ReviewState::Absent => (" ".to_string(), Style::new()),
         };
         let title_style = if mr.draft { Style::new().fg(MUTED).italic() } else { Style::new() };
+        let role = match mr.role {
+            Role::Author => ("author".to_string(), Style::new().fg(MUTED)),
+            Role::Reviewer => ("reviewer".to_string(), Style::new().fg(Color::LightBlue)),
+        };
         vec![
             marker,
+            role,
             (mr.reference.clone(), Style::new().bold()),
             (mr.merge_status.clone(), Style::new().fg(merge_status_color(&mr.merge_status))),
+            pipeline_cell(mr.pipeline.as_deref()),
             updated_cell(mr.updated),
             (mr.title.clone(), title_style),
         ]
@@ -129,6 +137,16 @@ fn merge_status_color(status: &str) -> Color {
         2 => Color::Red,
         _ => MUTED,
     }
+}
+
+fn pipeline_cell(pipeline: Option<&str>) -> Styled {
+    let color = match pipeline_rank(pipeline) {
+        0 => Color::Green,
+        1 => Color::Yellow,
+        2 => Color::Red,
+        _ => MUTED,
+    };
+    (pipeline.unwrap_or("-").to_string(), Style::new().fg(color))
 }
 
 /// Dates of the last 24 hours stand out, older ones are muted.
@@ -425,7 +443,7 @@ mod tests {
 
         let screen = draw(&mut app);
         assert!(screen.contains("Review group/project!1 [running]"), "{screen}");
-        assert!(screen.contains("*  group/project!1"), "{screen}");
+        assert!(screen.contains("*  author  group/project!1"), "{screen}");
         // The end of the session screen is shown.
         assert!(screen.contains("claude line 40"), "{screen}");
         assert!(!screen.contains("claude line 1 "), "{screen}");
@@ -440,7 +458,7 @@ mod tests {
 
         app.starting.push("group/project!1".into());
         let screen = draw(&mut app);
-        assert!(screen.contains("~  group/project!1"), "{screen}");
+        assert!(screen.contains("~  author  group/project!1"), "{screen}");
         assert!(screen.contains("Preparing the worktree"), "{screen}");
     }
 
@@ -455,9 +473,11 @@ mod tests {
         app.on_msg(Msg::Jira(Ok(vec![urgent, done])));
         let mut blocked = mr(2);
         blocked.merge_status = "conflict".into();
+        blocked.pipeline = Some("failed".into());
         let mut draft = mr(3);
         draft.draft = true;
         draft.title = "Draft: wip".into();
+        draft.role = Role::Reviewer;
         app.on_msg(Msg::Gitlab(Ok(vec![mr(1), blocked, draft])));
         app.on_msg(Msg::Reviews(vec![session(1, false), session(2, true)]));
 
@@ -467,9 +487,11 @@ mod tests {
         assert_eq!(style_of(&buffer, "High").fg, Some(Color::Red));
         assert_eq!(style_of(&buffer, "mergeable").fg, Some(Color::Green));
         assert_eq!(style_of(&buffer, "conflict").fg, Some(Color::Red));
+        assert_eq!(style_of(&buffer, "failed").fg, Some(Color::Red));
         assert_eq!(style_of(&buffer, "Draft: wip").fg, Some(MUTED));
-        assert_eq!(style_of(&buffer, "*  group/project!1").fg, Some(Color::Green));
-        assert_eq!(style_of(&buffer, "*  group/project!2").fg, Some(Color::Blue));
+        assert_eq!(style_of(&buffer, "reviewer").fg, Some(Color::LightBlue));
+        assert_eq!(style_of(&buffer, "*  author    group/project!1").fg, Some(Color::Green));
+        assert_eq!(style_of(&buffer, "*  author    group/project!2").fg, Some(Color::Blue));
         assert_eq!(style_of(&buffer, "KEY").fg, Some(Color::Yellow));
         // Focused pane title uses the accent color.
         assert_eq!(style_of(&buffer, "Jira issues").fg, Some(ACCENT));

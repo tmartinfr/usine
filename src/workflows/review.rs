@@ -73,7 +73,7 @@ mod tests {
     use chrono::DateTime;
 
     use super::*;
-    use crate::model::Source;
+    use crate::model::{Role, Source};
 
     #[test]
     fn session_names_are_tmux_safe() {
@@ -142,6 +142,8 @@ mod tests {
             title: "Add retry".into(),
             draft: false,
             merge_status: "mergeable".into(),
+            pipeline: None,
+            role: Role::Author,
             source_branch: "feat".into(),
             target_branch: "main".into(),
             author: "me".into(),
@@ -192,6 +194,8 @@ mod tests {
             title: String::new(),
             draft: false,
             merge_status: String::new(),
+            pipeline: None,
+            role: Role::Author,
             source_branch: String::new(),
             target_branch: "main".into(),
             author: String::new(),

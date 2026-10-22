@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 use usine::model::{Issue, MergeRequest};
 
 pub const ISSUE_COLUMNS: [&str; 5] = ["KEY", "STATUS", "PRIORITY", "UPDATED", "SUMMARY"];
-pub const MR_COLUMNS: [&str; 5] = ["R", "MR", "STATUS", "UPDATED", "TITLE"];
+pub const MR_COLUMNS: [&str; 7] = ["R", "ROLE", "MR", "STATUS", "PIPELINE", "UPDATED", "TITLE"];
 
 /// Column a pane is sorted on, as an index into its columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +50,13 @@ pub fn compare_merge_requests(
 ) -> Ordering {
     match column {
         0 => review(a).cmp(&review(b)),
-        1 => (a.project.to_lowercase(), a.iid).cmp(&(b.project.to_lowercase(), b.iid)),
-        2 => (merge_readiness(&a.merge_status), &a.merge_status)
+        1 => a.role.cmp(&b.role),
+        2 => (a.project.to_lowercase(), a.iid).cmp(&(b.project.to_lowercase(), b.iid)),
+        3 => (merge_readiness(&a.merge_status), &a.merge_status)
             .cmp(&(merge_readiness(&b.merge_status), &b.merge_status)),
-        3 => a.updated.cmp(&b.updated),
+        4 => (pipeline_rank(a.pipeline.as_deref()), &a.pipeline)
+            .cmp(&(pipeline_rank(b.pipeline.as_deref()), &b.pipeline)),
+        5 => a.updated.cmp(&b.updated),
         _ => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
     }
 }
@@ -91,9 +94,23 @@ pub fn merge_readiness(status: &str) -> u8 {
     }
 }
 
+/// GitLab pipeline statuses: 0 passed, 1 in progress or waiting, 2 failed,
+/// 3 canceled or skipped, 4 no pipeline.
+pub fn pipeline_rank(status: Option<&str>) -> u8 {
+    let Some(status) = status else { return 4 };
+    match status {
+        "success" => 0,
+        "created" | "waiting_for_resource" | "preparing" | "pending" | "running" | "scheduled"
+        | "manual" => 1,
+        "failed" => 2,
+        _ => 3,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::DateTime;
+    use usine::model::Role;
 
     use super::*;
     use crate::tui::app::tests::{issue, mr};
@@ -135,11 +152,36 @@ mod tests {
         let mut mrs = vec![blocked, waiting, ready];
         let iids = |mrs: &[MergeRequest]| mrs.iter().map(|m| m.iid).collect::<Vec<_>>();
 
-        mrs.sort_by(|a, b| compare_merge_requests(a, b, 2, |_| ReviewState::Absent));
+        mrs.sort_by(|a, b| compare_merge_requests(a, b, 3, |_| ReviewState::Absent));
         assert_eq!(iids(&mrs), [3, 2, 1]);
 
-        let sort = Sort { column: 3, descending: true };
-        mrs.sort_by(|a, b| sort.apply(compare_merge_requests(a, b, 3, |_| ReviewState::Absent)));
+        let sort = Sort { column: 5, descending: true };
+        mrs.sort_by(|a, b| sort.apply(compare_merge_requests(a, b, 5, |_| ReviewState::Absent)));
         assert_eq!(iids(&mrs), [3, 1, 2]);
+    }
+
+    #[test]
+    fn merge_requests_sort_by_pipeline() {
+        let with_pipeline = |iid, pipeline: Option<&str>| MergeRequest {
+            pipeline: pipeline.map(Into::into),
+            ..mr(iid)
+        };
+        let mut mrs = [
+            with_pipeline(1, None),
+            with_pipeline(2, Some("failed")),
+            with_pipeline(3, Some("canceled")),
+            with_pipeline(4, Some("running")),
+            with_pipeline(5, Some("success")),
+        ];
+        mrs.sort_by(|a, b| compare_merge_requests(a, b, 4, |_| ReviewState::Absent));
+        let iids: Vec<u64> = mrs.iter().map(|m| m.iid).collect();
+        assert_eq!(iids, [5, 4, 2, 3, 1]);
+    }
+
+    #[test]
+    fn merge_requests_sort_by_role() {
+        let mut mrs = [MergeRequest { role: Role::Reviewer, ..mr(1) }, mr(2)];
+        mrs.sort_by(|a, b| compare_merge_requests(a, b, 1, |_| ReviewState::Absent));
+        assert_eq!(mrs.map(|m| m.iid), [2, 1]);
     }
 }

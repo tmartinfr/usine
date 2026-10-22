@@ -99,13 +99,14 @@ fn merge_requests_table(mrs: &[MergeRequest]) -> String {
             vec![
                 m.reference.clone(),
                 m.merge_status.clone(),
+                m.pipeline.clone().unwrap_or_else(|| "-".into()),
                 m.target_branch.clone(),
                 m.updated.format("%Y-%m-%d").to_string(),
                 m.title.clone(),
             ]
         })
         .collect();
-    table(&["MR", "STATUS", "TARGET", "UPDATED", "TITLE"], &rows)
+    table(&["MR", "STATUS", "PIPELINE", "TARGET", "UPDATED", "TITLE"], &rows)
 }
 
 /// Left-aligned columns; the last one is truncated so lines fit in `MAX_WIDTH`.
@@ -146,7 +147,7 @@ fn truncate(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use chrono::DateTime;
-    use usine::model::Source;
+    use usine::model::{Role, Source};
 
     use super::*;
 
@@ -189,6 +190,8 @@ mod tests {
             title: "Add retry".into(),
             draft: false,
             merge_status: "mergeable".into(),
+            pipeline: None,
+            role: Role::Author,
             source_branch: "feat".into(),
             target_branch: "main".into(),
             author: "thomas".into(),
@@ -197,8 +200,8 @@ mod tests {
         };
         assert_eq!(
             merge_requests_table(&[mr]),
-            "MR                STATUS     TARGET  UPDATED     TITLE\n\
-             group/project!42  mergeable  main    2026-10-10  Add retry\n"
+            "MR                STATUS     PIPELINE  TARGET  UPDATED     TITLE\n\
+             group/project!42  mergeable  -         main    2026-10-10  Add retry\n"
         );
     }
 

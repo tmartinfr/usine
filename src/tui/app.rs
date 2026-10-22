@@ -134,7 +134,7 @@ pub enum Action {
     Quit,
     Refresh,
     Open(String),
-    StartReview(MergeRequest),
+    StartReview(Box<MergeRequest>),
     /// Attach the terminal to this tmux session.
     Attach(String),
     /// Kill this tmux session.
@@ -357,7 +357,7 @@ impl App {
         }
         self.starting.push(mr.reference.clone());
         self.sort_panes();
-        Action::StartReview(mr)
+        Action::StartReview(Box::new(mr))
     }
 
     /// Keys while choosing the sort column: Enter sorts on it, or reverses the
@@ -415,7 +415,7 @@ impl App {
 #[cfg(test)]
 pub mod tests {
     use chrono::DateTime;
-    use usine::model::Source;
+    use usine::model::{Role, Source};
 
     use super::*;
 
@@ -443,6 +443,8 @@ pub mod tests {
             title: format!("MR {iid}"),
             draft: false,
             merge_status: "mergeable".into(),
+            pipeline: None,
+            role: Role::Author,
             source_branch: "feat".into(),
             target_branch: "main".into(),
             author: "me".into(),
@@ -605,7 +607,7 @@ pub mod tests {
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Char('j')));
 
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::StartReview(mr(2)));
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::StartReview(Box::new(mr(2))));
         assert_eq!(app.starting, ["group/project!2"]);
         assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
         assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("Review already starting"));

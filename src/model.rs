@@ -33,6 +33,14 @@ pub struct Issue {
     pub url: String,
 }
 
+/// Why a merge request is listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Author,
+    Reviewer,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MergeRequest {
     pub source: Source,
@@ -44,9 +52,12 @@ pub struct MergeRequest {
     pub title: String,
     pub draft: bool,
     pub merge_status: String,
+    /// Status of the latest pipeline (`success`, `failed`, `running`...), None without pipeline.
+    pub pipeline: Option<String>,
     pub source_branch: String,
     pub target_branch: String,
     pub author: String,
+    pub role: Role,
     pub updated: DateTime<FixedOffset>,
     pub url: String,
 }

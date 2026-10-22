@@ -71,10 +71,12 @@ impl Sources {
         if let Some((client, _)) = &self.gitlab {
             let (client, tx) = (client.clone(), tx.clone());
             tokio::spawn(async move {
-                let result = client
-                    .my_open_merge_requests(LIMIT)
-                    .await
-                    .map_err(|e| format!("{e:#}"));
+                let result = tokio::try_join!(
+                    client.my_open_merge_requests(LIMIT),
+                    client.merge_requests_to_review(LIMIT),
+                )
+                .map(|(authored, to_review)| merge_lists(authored, to_review, LIMIT))
+                .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(Msg::Gitlab(result));
             });
         }
@@ -119,6 +121,24 @@ impl Sources {
             }
         });
     }
+}
+
+/// MRs I authored and MRs I review, most recently updated first; an MR in both
+/// lists is kept as authored.
+fn merge_lists(
+    authored: Vec<MergeRequest>,
+    to_review: Vec<MergeRequest>,
+    limit: usize,
+) -> Vec<MergeRequest> {
+    let mut mrs = authored;
+    for mr in to_review {
+        if !mrs.iter().any(|m| m.reference == mr.reference) {
+            mrs.push(mr);
+        }
+    }
+    mrs.sort_by(|a, b| b.updated.cmp(&a.updated));
+    mrs.truncate(limit);
+    mrs
 }
 
 /// Must be called from within the tokio runtime.
@@ -173,7 +193,7 @@ fn event_loop(
                         app.message = Some(Notice::error(format!("cannot open {url}: {err}")));
                     }
                 }
-                Action::StartReview(mr) => sources.start_review(mr, tx),
+                Action::StartReview(mr) => sources.start_review(*mr, tx),
                 Action::Attach(session) => {
                     if let Err(err) = attach(terminal, &sources.tmux, &session) {
                         app.message = Some(Notice::error(format!("{err:#}")));
@@ -231,4 +251,31 @@ fn open_in_browser(url: &str) -> std::io::Result<()> {
     // Reap the process so it does not linger as a zombie.
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::DateTime;
+    use usine::model::Role;
+
+    use super::*;
+    use crate::tui::app::tests::mr;
+
+    fn updated(mut mr: MergeRequest, day: u32, role: Role) -> MergeRequest {
+        mr.updated = DateTime::parse_from_rfc3339(&format!("2026-10-{day:02}T12:00:00Z")).unwrap();
+        mr.role = role;
+        mr
+    }
+
+    #[test]
+    fn merges_authored_and_review_lists_by_date() {
+        let authored = vec![updated(mr(1), 20, Role::Author), updated(mr(2), 10, Role::Author)];
+        let to_review = vec![updated(mr(3), 15, Role::Reviewer), updated(mr(2), 10, Role::Reviewer)];
+
+        let mrs = merge_lists(authored, to_review, 100);
+
+        let listed: Vec<(u64, Role)> = mrs.iter().map(|m| (m.iid, m.role)).collect();
+        assert_eq!(listed, [(1, Role::Author), (3, Role::Reviewer), (2, Role::Author)]);
+        assert_eq!(merge_lists(mrs, vec![], 2).len(), 2);
+    }
 }
