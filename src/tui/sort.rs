@@ -7,6 +7,11 @@ use usine::model::{Issue, MergeRequest};
 pub const ISSUE_COLUMNS: [&str; 5] = ["KEY", "STATUS", "PRIORITY", "UPDATED", "SUMMARY"];
 pub const MR_COLUMNS: [&str; 7] = ["R", "ROLE", "MR", "STATUS", "PIPELINE", "UPDATED", "TITLE"];
 
+/// Jira issues by status, then most recently updated first (the source order).
+pub const ISSUE_DEFAULT_SORT: Sort = Sort { column: 1, descending: false };
+/// Authored merge requests first, then most recently updated first.
+pub const MR_DEFAULT_SORT: Sort = Sort { column: 1, descending: false };
+
 /// Column a pane is sorted on, as an index into its columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sort {

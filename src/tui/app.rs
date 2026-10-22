@@ -10,7 +10,8 @@ use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest};
 
 use super::sort::{
-    ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, compare_issues, compare_merge_requests,
+    ISSUE_COLUMNS, ISSUE_DEFAULT_SORT, MR_COLUMNS, MR_DEFAULT_SORT, ReviewState, Sort,
+    compare_issues, compare_merge_requests,
 };
 
 /// Something a pane can list and open in a browser.
@@ -49,12 +50,12 @@ pub struct Pane<T> {
 }
 
 impl<T: Item> Pane<T> {
-    fn new(configured: bool) -> Self {
+    fn new(configured: bool, sort: Sort) -> Self {
         Self {
             content: if configured { Content::Pending } else { Content::NotConfigured },
             loading: false,
             table: TableState::default(),
-            sort: None,
+            sort: Some(sort),
         }
     }
 
@@ -204,8 +205,8 @@ pub struct App {
 impl App {
     pub fn new(jira_configured: bool, gitlab_configured: bool, config_path: String) -> Self {
         Self {
-            jira: Pane::new(jira_configured),
-            gitlab: Pane::new(gitlab_configured),
+            jira: Pane::new(jira_configured, ISSUE_DEFAULT_SORT),
+            gitlab: Pane::new(gitlab_configured, MR_DEFAULT_SORT),
             focus: Focus::Jira,
             config_path,
             last_update: None,
@@ -422,7 +423,7 @@ impl App {
 #[cfg(test)]
 pub mod tests {
     use chrono::DateTime;
-    use usine::model::{Role, Source};
+    use usine::model::{Role, Source, StatusCategory};
 
     use super::*;
 
@@ -667,9 +668,11 @@ pub mod tests {
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(app.jira.selected().map(|i| i.key.as_str()), Some("PAY-2"));
 
+        // Starts on the current sort column.
         app.on_key(key(KeyCode::Char('s')));
-        assert_eq!(app.sorting, Some(0));
+        assert_eq!(app.sorting, Some(1));
         // Navigation keys move the column, not the row.
+        app.on_key(key(KeyCode::Left));
         app.on_key(key(KeyCode::Left));
         assert_eq!(app.sorting, Some(0));
         app.on_key(key(KeyCode::Char('l')));
@@ -683,7 +686,7 @@ pub mod tests {
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert_eq!(app.sorting, None);
         assert_eq!(app.jira.sort, Some(Sort { column: 0, descending: false }));
-        assert_eq!(app.gitlab.sort, None);
+        assert_eq!(app.gitlab.sort, Some(MR_DEFAULT_SORT));
 
         // Same column again: reversed, and the selected issue stays selected.
         app.on_key(key(KeyCode::Char('s')));
@@ -693,6 +696,29 @@ pub mod tests {
         let keys: Vec<&str> = app.jira.items().iter().map(|i| i.key.as_str()).collect();
         assert_eq!(keys, ["PAY-3", "PAY-2", "PAY-1"]);
         assert_eq!(app.jira.selected().map(|i| i.key.as_str()), Some("PAY-2"));
+    }
+
+    #[test]
+    fn panes_are_sorted_by_status_and_role_by_default() {
+        let mut app = App::new(true, true, "config.toml".into());
+        let with_status = |key: &str, category: StatusCategory| Issue {
+            status_category: category,
+            ..issue(key)
+        };
+        app.on_msg(Msg::Jira(Ok(vec![
+            with_status("PAY-1", StatusCategory::Done),
+            with_status("PAY-2", StatusCategory::Todo),
+            with_status("PAY-3", StatusCategory::InProgress),
+            with_status("PAY-4", StatusCategory::Todo),
+        ])));
+        let keys: Vec<&str> = app.jira.items().iter().map(|i| i.key.as_str()).collect();
+        // Same status: the source order is kept.
+        assert_eq!(keys, ["PAY-2", "PAY-4", "PAY-3", "PAY-1"]);
+
+        let reviewer = |iid| MergeRequest { role: Role::Reviewer, ..mr(iid) };
+        app.on_msg(Msg::Gitlab(Ok(vec![reviewer(1), mr(2), reviewer(3), mr(4)])));
+        let iids: Vec<u64> = app.gitlab.items().iter().map(|m| m.iid).collect();
+        assert_eq!(iids, [2, 4, 1, 3]);
     }
 
     #[test]
@@ -712,7 +738,7 @@ pub mod tests {
         app.on_key(key(KeyCode::Char('l')));
         assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
         assert_eq!(app.sorting, None);
-        assert_eq!(app.jira.sort, None);
+        assert_eq!(app.jira.sort, Some(ISSUE_DEFAULT_SORT));
     }
 
     #[test]
@@ -720,6 +746,7 @@ pub mod tests {
         let mut app = loaded_app();
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Char('s')));
+        app.on_key(key(KeyCode::Char('h')));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.gitlab.sort, Some(Sort { column: 0, descending: false }));
 

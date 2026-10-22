@@ -445,8 +445,8 @@ mod tests {
 
         assert!(screen.contains("Jira issues (2)"), "{screen}");
         assert!(screen.contains("GitLab MRs (1)"), "{screen}");
-        assert!(screen.contains("KEY    STATUS  PRIORITY  UPDATED     SUMMARY"), "{screen}");
-        assert!(screen.contains("PAY-2  To Do   -         2026-10-10  Summary of PAY-2"), "{screen}");
+        assert!(screen.contains("KEY    STATUS ^  PRIORITY  UPDATED     SUMMARY"), "{screen}");
+        assert!(screen.contains("PAY-2  To Do     -         2026-10-10  Summary of PAY-2"), "{screen}");
         assert!(screen.contains("group/project!42"), "{screen}");
         assert!(screen.contains("q: quit"), "{screen}");
     }
@@ -566,16 +566,16 @@ mod tests {
         let buffer = draw_buffer(&mut app);
         let screen = draw(&mut app);
         assert!(screen.contains("Sort by: h/l: choose column"), "{screen}");
-        assert!(style_of(&buffer, "STATUS").add_modifier.contains(Modifier::REVERSED));
-        assert!(!style_of(&buffer, "KEY").add_modifier.contains(Modifier::REVERSED));
+        assert!(style_of(&buffer, "PRIORITY").add_modifier.contains(Modifier::REVERSED));
+        assert!(!style_of(&buffer, "STATUS").add_modifier.contains(Modifier::REVERSED));
 
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let screen = draw(&mut app);
-        assert!(screen.contains("KEY    STATUS ^  PRIORITY"), "{screen}");
+        assert!(screen.contains("KEY    STATUS  PRIORITY ^  UPDATED"), "{screen}");
         assert!(screen.contains("s: sort"), "{screen}");
         app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(draw(&mut app).contains("STATUS v"));
+        assert!(draw(&mut app).contains("PRIORITY v"));
     }
 
     #[test]

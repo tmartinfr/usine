@@ -67,7 +67,7 @@ usine tui
 The screen shows three panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
-- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard), most recently updated first. The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
 - **Review**: the live screen of the Claude review of the merge request selected in the GitLab pane.
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
 
@@ -75,12 +75,12 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 
 ```
 + Jira issues (2) ------------------------------------------------------------+
-|KEY      STATUS       PRIORITY  UPDATED     SUMMARY                           |
-|PAY-123  In Progress  High      2026-10-10  Fix the payment retry loop        |
+|KEY      STATUS ^     PRIORITY  UPDATED     SUMMARY                           |
 |OPS-7    To Do        -         2026-10-01  Rotate staging certificates       |
+|PAY-123  In Progress  High      2026-10-10  Fix the payment retry loop        |
 +-----------------------------------------------------------------------------+
 + GitLab MRs (2) -------------------------------------------------------------+
-|R  ROLE      MR                    STATUS        PIPELINE  UPDATED     TITLE  |
+|R  ROLE ^    MR                    STATUS        PIPELINE  UPDATED     TITLE  |
 |*  author    group/backend/api!42  not_approved  running   2026-10-10  Add... |
 |   reviewer  group/web!310         mergeable     success   2026-10-09  Upd... |
 +-----------------------------------------------------------------------------+
@@ -108,7 +108,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
 | `Ctrl-C`                | Quit immediately                                    |
 
-Press `s` to sort the focused pane: the header of a column is highlighted; move it with `h` / `Left` and `l` / `Right`, then press `Enter` to sort on that column. Choosing the column the pane is already sorted on reverses the order, so `s` then `Enter` flips the current sort. `Esc` (or `s` again) cancels. The sort column shows `^` (ascending) or `v` (descending) next to its name, the selected row stays selected, and the sort is kept when the pane refreshes. Until you choose a sort, items are listed in the order of the source (most recently updated first).
+Press `s` to sort the focused pane: the header of a column is highlighted; move it with `h` / `Left` and `l` / `Right`, then press `Enter` to sort on that column. Choosing the column the pane is already sorted on reverses the order, so `s` then `Enter` flips the current sort. `Esc` (or `s` again) cancels. The sort column shows `^` (ascending) or `v` (descending) next to its name, the selected row stays selected, and the sort is kept when the pane refreshes. By default, Jira issues are sorted by `STATUS` and merge requests by `ROLE` (yours first, then those you review); items that compare equal keep the order of the source, most recently updated first.
 
 Ascending order means:
 
