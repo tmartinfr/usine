@@ -11,7 +11,7 @@ pub enum Source {
 }
 
 /// Coarse progress of an issue, comparable across trackers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusCategory {
     Todo,

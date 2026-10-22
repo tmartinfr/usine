@@ -9,7 +9,8 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
 use usine::model::{Issue, MergeRequest, StatusCategory};
 
-use super::app::{App, Content, Focus, Item, Level, Pane};
+use super::app::{App, Content, Focus, Item, Level, Pane, review_state};
+use super::sort::{ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, merge_readiness, priority_rank};
 
 /// Color of focused borders, titles and key hints.
 const ACCENT: Color = Color::Cyan;
@@ -39,23 +40,21 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         PaneView {
             title: "Jira issues",
             section: "[jira]",
-            header: &["KEY", "STATUS", "PRIORITY", "UPDATED", "SUMMARY"],
+            header: &ISSUE_COLUMNS,
             row: &issue_row,
             focused: app.focus == Focus::Jira,
+            choosing: app.sorting.filter(|_| app.focus == Focus::Jira),
             config_path: &app.config_path,
         },
         &mut app.jira,
     );
     let (reviews, starting) = (&app.reviews, &app.starting);
     let merge_request_row = |mr: &MergeRequest| {
-        let marker = if starting.contains(&mr.reference) {
-            ("~".to_string(), Style::new().fg(Color::Yellow).bold())
-        } else {
-            match reviews.iter().find(|s| s.subject == mr.reference) {
-                Some(review) if review.finished => ("*".to_string(), Style::new().fg(Color::Blue).bold()),
-                Some(_) => ("*".to_string(), Style::new().fg(Color::Green).bold()),
-                None => (" ".to_string(), Style::new()),
-            }
+        let marker = match review_state(reviews, starting, mr) {
+            ReviewState::Starting => ("~".to_string(), Style::new().fg(Color::Yellow).bold()),
+            ReviewState::Finished => ("*".to_string(), Style::new().fg(Color::Blue).bold()),
+            ReviewState::Running => ("*".to_string(), Style::new().fg(Color::Green).bold()),
+            ReviewState::Absent => (" ".to_string(), Style::new()),
         };
         let title_style = if mr.draft { Style::new().fg(MUTED).italic() } else { Style::new() };
         vec![
@@ -72,9 +71,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         PaneView {
             title: "GitLab MRs",
             section: "[gitlab]",
-            header: &["R", "MR", "STATUS", "UPDATED", "TITLE"],
+            header: &MR_COLUMNS,
             row: &merge_request_row,
             focused: app.focus == Focus::Gitlab,
+            choosing: app.sorting.filter(|_| app.focus == Focus::Gitlab),
             config_path: &app.config_path,
         },
         &mut app.gitlab,
@@ -89,6 +89,8 @@ struct PaneView<'a, T> {
     header: &'a [&'a str],
     row: &'a dyn Fn(&T) -> Vec<Styled>,
     focused: bool,
+    /// Column highlighted while choosing the sort column.
+    choosing: Option<usize>,
     config_path: &'a str,
 }
 
@@ -98,8 +100,8 @@ fn issue_row(issue: &Issue) -> Vec<Styled> {
         StatusCategory::InProgress => Color::Yellow,
         StatusCategory::Done => Color::Green,
     };
+    let priority_color = priority_color(issue.priority.as_deref());
     let priority = issue.priority.clone().unwrap_or_else(|| "-".into());
-    let priority_color = priority_color(&priority);
     vec![
         (issue.key.clone(), Style::new().bold()),
         (issue.status.clone(), Style::new().fg(status_color)),
@@ -109,26 +111,23 @@ fn issue_row(issue: &Issue) -> Vec<Styled> {
     ]
 }
 
-/// Jira default and common custom priority names.
-fn priority_color(priority: &str) -> Color {
-    match priority.to_lowercase().as_str() {
-        "highest" | "blocker" | "critical" | "urgent" => Color::LightRed,
-        "high" | "major" => Color::Red,
-        "medium" => Color::Yellow,
-        "low" | "minor" => Color::Green,
-        "lowest" | "trivial" => Color::Blue,
+fn priority_color(priority: Option<&str>) -> Color {
+    match priority_rank(priority) {
+        0 => Color::LightRed,
+        1 => Color::Red,
+        2 => Color::Yellow,
+        3 => Color::Green,
+        4 => Color::Blue,
         _ => MUTED,
     }
 }
 
-/// GitLab `detailed_merge_status` values: ready, in progress, or blocked.
 fn merge_status_color(status: &str) -> Color {
-    match status {
-        "mergeable" => Color::Green,
-        "draft_status" => MUTED,
-        "unchecked" | "checking" | "preparing" | "approvals_syncing" | "ci_still_running"
-        | "not_approved" => Color::Yellow,
-        _ => Color::Red,
+    match merge_readiness(status) {
+        0 => Color::Green,
+        1 => Color::Yellow,
+        2 => Color::Red,
+        _ => MUTED,
     }
 }
 
@@ -180,7 +179,8 @@ fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: 
     };
 
     let rows: Vec<Vec<Styled>> = items.iter().map(view.row).collect();
-    let mut widths: Vec<usize> = view.header.iter().map(|h| h.chars().count()).collect();
+    let header = header_labels(view.header, pane.sort);
+    let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for row in &rows {
         for (width, (cell, _)) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
@@ -200,14 +200,31 @@ fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: 
     let rows = rows.into_iter().map(|row| {
         Row::new(row.into_iter().map(|(text, style)| Cell::from(text).style(style)))
     });
-    let header = Row::new(view.header.iter().copied())
-        .style(Style::new().fg(Color::Yellow).bold().underlined());
+    let header = Row::new(header.into_iter().enumerate().map(|(i, label)| {
+        let cell = Cell::from(label);
+        if view.choosing == Some(i) { cell.reversed() } else { cell }
+    }))
+    .style(Style::new().fg(Color::Yellow).bold().underlined());
     let table = Table::new(rows, constraints)
         .header(header)
         .column_spacing(2)
         .row_highlight_style(highlight)
         .block(block);
     frame.render_stateful_widget(table, area, &mut pane.table);
+}
+
+/// Column names, with `^` (ascending) or `v` (descending) on the sort column.
+fn header_labels(columns: &[&str], sort: Option<Sort>) -> Vec<String> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(i, name)| match sort {
+            Some(sort) if sort.column == i => {
+                format!("{name} {}", if sort.descending { "v" } else { "^" })
+            }
+            _ => name.to_string(),
+        })
+        .collect()
 }
 
 /// Live view of the review session of the selected MR.
@@ -259,10 +276,17 @@ fn render_review(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-const KEYS: [(&str, &str); 8] = [
+const SORT_KEYS: [(&str, &str); 3] = [
+    ("h/l", "choose column"),
+    ("Enter", "sort (again: reverse)"),
+    ("Esc", "cancel"),
+];
+
+const KEYS: [(&str, &str); 9] = [
     ("Tab", "switch"),
     ("j/k", "move"),
     ("Enter", "open"),
+    ("s", "sort"),
     ("r", "refresh"),
     ("v", "review"),
     ("a", "attach"),
@@ -282,12 +306,18 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(format!(" {}", notice.text)).fg(color)
         }
         None => {
-            let mut spans = vec![Span::raw(" ")];
-            for (key, action) in KEYS {
-                spans.push(Span::styled(key, Style::new().fg(ACCENT).bold()));
+            let (mut spans, keys) = match app.sorting {
+                Some(_) => {
+                    let label = Span::styled(" Sort by: ", Style::new().fg(ACCENT).bold());
+                    (vec![label], &SORT_KEYS[..])
+                }
+                None => (vec![Span::raw(" ")], &KEYS[..]),
+            };
+            for (key, action) in keys {
+                spans.push(Span::styled(*key, Style::new().fg(ACCENT).bold()));
                 spans.push(Span::styled(format!(": {action}  "), Style::new().fg(MUTED)));
             }
-            if let Some(at) = app.last_update {
+            if let Some(at) = app.last_update.filter(|_| app.sorting.is_none()) {
                 spans.push(Span::styled(format!("updated {}", at.format("%H:%M")), Style::new().fg(MUTED)));
             }
             Line::from(spans)
@@ -301,6 +331,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
     use crate::tui::app::{Msg, Notice};
@@ -457,6 +488,28 @@ mod tests {
         let buffer = draw_buffer(&mut app);
         assert_eq!(style_of(&buffer, "green claude output").fg, Some(Color::Green));
         assert_eq!(style_of(&buffer, "[running]").fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn shows_sort_column_and_choice() {
+        let mut app = App::new(true, true, "config.toml".into());
+        app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), issue("PAY-2")])));
+        app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+
+        let buffer = draw_buffer(&mut app);
+        let screen = draw(&mut app);
+        assert!(screen.contains("Sort by: h/l: choose column"), "{screen}");
+        assert!(style_of(&buffer, "STATUS").add_modifier.contains(Modifier::REVERSED));
+        assert!(!style_of(&buffer, "KEY").add_modifier.contains(Modifier::REVERSED));
+
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let screen = draw(&mut app);
+        assert!(screen.contains("KEY    STATUS ^  PRIORITY"), "{screen}");
+        assert!(screen.contains("s: sort"), "{screen}");
+        app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(draw(&mut app).contains("STATUS v"));
     }
 
     #[test]

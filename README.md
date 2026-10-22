@@ -85,7 +85,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 + Review group/backend/api!42 [running]  a: attach ---------------------------+
 | * Reading the diff of group/backend/api!42...                               |
 +-----------------------------------------------------------------------------+
- Tab: switch  j/k: move  Enter: open  r: refresh  v: review  a: attach  x: close  q: quit
+ Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  q: quit
 ```
 
 | Key                     | Action                                              |
@@ -96,12 +96,26 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `g` / `Home`            | First row                                           |
 | `G` / `End`             | Last row                                            |
 | `Enter`                 | Open the selected issue or merge request in your browser |
+| `s`                     | Choose the column to sort the pane on (see below)   |
 | `r`                     | Refresh both panes now                              |
 | `v`                     | Start a Claude review of the selected merge request (GitLab pane) |
 | `a`                     | Attach to the review of the selected merge request (GitLab pane) |
 | `x`                     | Close a finished review (GitLab pane)               |
 | `X`                     | Close a review even if Claude is still running (GitLab pane) |
 | `q` / `Esc` / `Ctrl-C`  | Quit                                                |
+
+Press `s` to sort the focused pane: the header of a column is highlighted; move it with `h` / `Left` and `l` / `Right`, then press `Enter` to sort on that column. Choosing the column the pane is already sorted on reverses the order, so `s` then `Enter` flips the current sort. `Esc` (or `s` again) cancels. The sort column shows `^` (ascending) or `v` (descending) next to its name, the selected row stays selected, and the sort is kept when the pane refreshes. Until you choose a sort, items are listed in the order of the source (most recently updated first).
+
+Ascending order means:
+
+- `KEY`: by project, then by number (`PAY-9` before `PAY-10`).
+- `STATUS` (Jira): to do, in progress, done, then by status name.
+- `PRIORITY`: most important first, issues without priority last.
+- `R`: running reviews, starting, finished, then merge requests without review.
+- `MR`: by project, then by number.
+- `STATUS` (GitLab): mergeable, waiting, blocked, draft, then by status name.
+- `UPDATED`: oldest first.
+- `SUMMARY` / `TITLE`: alphabetical, ignoring case.
 
 Colors help scanning the panes:
 

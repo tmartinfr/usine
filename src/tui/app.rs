@@ -1,10 +1,16 @@
 //! TUI state and key handling, independent from the terminal.
 
+use std::cmp::Ordering;
+
 use chrono::{DateTime, Local};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest};
+
+use super::sort::{
+    ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, compare_issues, compare_merge_requests,
+};
 
 /// Something a pane can list and open in a browser.
 pub trait Item {
@@ -37,6 +43,8 @@ pub struct Pane<T> {
     /// A fetch is in flight (the previous content stays visible).
     pub loading: bool,
     pub table: TableState,
+    /// None: the order of the source.
+    pub sort: Option<Sort>,
 }
 
 impl<T: Item> Pane<T> {
@@ -45,6 +53,7 @@ impl<T: Item> Pane<T> {
             content: if configured { Content::Pending } else { Content::NotConfigured },
             loading: false,
             table: TableState::default(),
+            sort: None,
         }
     }
 
@@ -79,6 +88,17 @@ impl<T: Item> Pane<T> {
         self.table.select(selected);
     }
 
+    /// Sorts on `self.sort` with `compare`, keeping the selected item selected.
+    fn sort_items(&mut self, compare: impl Fn(&T, &T, usize) -> Ordering) {
+        let Some(sort) = self.sort else { return };
+        let selected = self.selected().map(|item| item.url().to_string());
+        let Content::Loaded(items) = &mut self.content else { return };
+        items.sort_by(|a, b| sort.apply(compare(a, b, sort.column)));
+        if let Some(url) = selected {
+            self.table.select(items.iter().position(|item| item.url() == url));
+        }
+    }
+
     fn select(&mut self, target: impl FnOnce(usize, usize) -> isize) {
         let len = self.items().len();
         if len == 0 {
@@ -94,6 +114,18 @@ impl<T: Item> Pane<T> {
 pub enum Focus {
     Jira,
     Gitlab,
+}
+
+/// Review state of `mr`, given the review sessions and the reviews being set up.
+pub fn review_state(reviews: &[Session], starting: &[String], mr: &MergeRequest) -> ReviewState {
+    if starting.contains(&mr.reference) {
+        return ReviewState::Starting;
+    }
+    match reviews.iter().find(|s| s.subject == mr.reference) {
+        Some(review) if review.finished => ReviewState::Finished,
+        Some(_) => ReviewState::Running,
+        None => ReviewState::Absent,
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -159,6 +191,8 @@ pub struct App {
     pub starting: Vec<String>,
     /// Last captured screen of a review session: (session name, text).
     pub preview: Option<(String, String)>,
+    /// Column being chosen to sort the focused pane on.
+    pub sorting: Option<usize>,
 }
 
 impl App {
@@ -173,6 +207,7 @@ impl App {
             reviews: Vec::new(),
             starting: Vec::new(),
             preview: None,
+            sorting: None,
         }
     }
 
@@ -231,10 +266,15 @@ impl App {
             }
             Msg::Notice(notice) => self.message = Some(notice),
         }
+        // New items, or review states for the R column.
+        self.sort_panes();
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         self.message = None;
+        if let Some(column) = self.sorting {
+            return self.on_sort_key(key, column);
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => return Action::Quit,
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -258,6 +298,9 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.select(|current, _| current as isize - 1),
             KeyCode::Char('g') | KeyCode::Home => self.select(|_, _| 0),
             KeyCode::Char('G') | KeyCode::End => self.select(|_, len| len as isize - 1),
+            KeyCode::Char('s') => {
+                self.sorting = Some(self.focused_sort().map_or(0, |sort| sort.column));
+            }
             KeyCode::Char('v') if self.focus == Focus::Gitlab => return self.start_review(),
             KeyCode::Char('a') if self.focus == Focus::Gitlab => {
                 return match self.selected_review() {
@@ -300,7 +343,52 @@ impl App {
             return Action::None;
         }
         self.starting.push(mr.reference.clone());
+        self.sort_panes();
         Action::StartReview(mr)
+    }
+
+    /// Keys while choosing the sort column: Enter sorts on it, or reverses the
+    /// order when the pane is already sorted on it.
+    fn on_sort_key(&mut self, key: KeyEvent, column: usize) -> Action {
+        let last = match self.focus {
+            Focus::Jira => ISSUE_COLUMNS.len() - 1,
+            Focus::Gitlab => MR_COLUMNS.len() - 1,
+        };
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Action::Quit;
+            }
+            KeyCode::Char('h') | KeyCode::Left => self.sorting = Some(column.saturating_sub(1)),
+            KeyCode::Char('l') | KeyCode::Right => self.sorting = Some((column + 1).min(last)),
+            KeyCode::Enter => {
+                let sort = match self.focus {
+                    Focus::Jira => &mut self.jira.sort,
+                    Focus::Gitlab => &mut self.gitlab.sort,
+                };
+                let descending = matches!(sort, Some(s) if s.column == column && !s.descending);
+                *sort = Some(Sort { column, descending });
+                self.sorting = None;
+                self.sort_panes();
+            }
+            KeyCode::Char('s' | 'q') | KeyCode::Esc => self.sorting = None,
+            _ => {}
+        }
+        Action::None
+    }
+
+    pub fn focused_sort(&self) -> Option<Sort> {
+        match self.focus {
+            Focus::Jira => self.jira.sort,
+            Focus::Gitlab => self.gitlab.sort,
+        }
+    }
+
+    fn sort_panes(&mut self) {
+        self.jira.sort_items(compare_issues);
+        let (reviews, starting) = (&self.reviews, &self.starting);
+        self.gitlab.sort_items(|a, b, column| {
+            compare_merge_requests(a, b, column, |mr| review_state(reviews, starting, mr))
+        });
     }
 
     fn select(&mut self, target: impl FnOnce(usize, usize) -> isize) {
@@ -530,6 +618,67 @@ pub mod tests {
 
         app.on_msg(Msg::Reviews(vec![session(1, true)]));
         assert_eq!(app.on_key(key(KeyCode::Char('x'))), Action::CloseReview(name));
+    }
+
+    #[test]
+    fn s_chooses_the_sort_column_of_the_focused_pane() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.jira.selected().map(|i| i.key.as_str()), Some("PAY-2"));
+
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(app.sorting, Some(0));
+        // Navigation keys move the column, not the row.
+        app.on_key(key(KeyCode::Left));
+        assert_eq!(app.sorting, Some(0));
+        app.on_key(key(KeyCode::Char('l')));
+        app.on_key(key(KeyCode::Char('l')));
+        app.on_key(key(KeyCode::Char('h')));
+        assert_eq!(app.on_key(key(KeyCode::Char('j'))), Action::None);
+        assert_eq!(app.sorting, Some(1));
+        assert_eq!(app.jira.table.selected(), Some(1));
+
+        app.on_key(key(KeyCode::Char('h')));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert_eq!(app.sorting, None);
+        assert_eq!(app.jira.sort, Some(Sort { column: 0, descending: false }));
+        assert_eq!(app.gitlab.sort, None);
+
+        // Same column again: reversed, and the selected issue stays selected.
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(app.sorting, Some(0));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.jira.sort, Some(Sort { column: 0, descending: true }));
+        let keys: Vec<&str> = app.jira.items().iter().map(|i| i.key.as_str()).collect();
+        assert_eq!(keys, ["PAY-3", "PAY-2", "PAY-1"]);
+        assert_eq!(app.jira.selected().map(|i| i.key.as_str()), Some("PAY-2"));
+    }
+
+    #[test]
+    fn escape_cancels_sort_without_quitting() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Char('s')));
+        app.on_key(key(KeyCode::Char('l')));
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.sorting, None);
+        assert_eq!(app.jira.sort, None);
+    }
+
+    #[test]
+    fn sort_is_kept_across_refreshes_and_review_changes() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Char('s')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.gitlab.sort, Some(Sort { column: 0, descending: false }));
+
+        app.on_msg(Msg::Gitlab(Ok(vec![mr(1), mr(2), mr(3)])));
+        app.on_msg(Msg::Reviews(vec![session(3, false)]));
+        let iids = |app: &App| app.gitlab.items().iter().map(|m| m.iid).collect::<Vec<_>>();
+        assert_eq!(iids(&app), [3, 1, 2]);
+
+        app.on_msg(Msg::Reviews(vec![session(3, true), session(2, false)]));
+        assert_eq!(iids(&app), [2, 3, 1]);
     }
 
     #[test]

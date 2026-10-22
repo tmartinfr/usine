@@ -1,6 +1,7 @@
 //! Interactive terminal UI: Jira issues, GitLab MRs and their Claude reviews.
 
 mod app;
+mod sort;
 mod ui;
 
 use std::io::stdout;
