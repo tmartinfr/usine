@@ -10,6 +10,8 @@ pub struct RawMergeRequest {
     pub project_id: u64,
     pub iid: u64,
     pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
     pub web_url: String,
     pub draft: bool,
     pub detailed_merge_status: String,
@@ -66,6 +68,7 @@ impl RawMergeRequest {
             project,
             iid: self.iid,
             title: self.title,
+            description: self.description.unwrap_or_default(),
             draft: self.draft,
             merge_status: self.detailed_merge_status,
             pipeline,
@@ -98,6 +101,7 @@ mod tests {
         assert_eq!(first.project, "paylead/backend/api");
         assert_eq!(first.iid, 42);
         assert_eq!(first.title, "Add retry on payment webhook");
+        assert_eq!(first.description, "Closes PAY-123.");
         assert!(!first.draft);
         assert_eq!(first.merge_status, "not_approved");
         assert_eq!(first.pipeline.as_deref(), Some("failed"));
@@ -109,6 +113,7 @@ mod tests {
         assert_eq!(first.url, "https://gitlab.com/paylead/backend/api/-/merge_requests/42");
 
         assert!(mrs[1].draft);
+        assert_eq!(mrs[1].description, "");
     }
 
     #[test]

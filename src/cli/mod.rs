@@ -188,6 +188,7 @@ mod tests {
             project: "group/project".into(),
             iid: 42,
             title: "Add retry".into(),
+            description: String::new(),
             draft: false,
             merge_status: "mergeable".into(),
             pipeline: None,

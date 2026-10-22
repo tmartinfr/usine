@@ -8,6 +8,7 @@ use ratatui::widgets::TableState;
 use usine::api_log::ApiLog;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest};
+use usine::workflows::links::link;
 
 use super::sort::{
     ISSUE_COLUMNS, ISSUE_DEFAULT_SORT, MR_COLUMNS, MR_DEFAULT_SORT, ReviewState, Sort,
@@ -103,20 +104,51 @@ impl<T: Item> Pane<T> {
 
     fn select(&mut self, target: impl FnOnce(usize, usize) -> isize) {
         let len = self.items().len();
-        if len == 0 {
-            return;
-        }
-        let current = self.table.selected().unwrap_or(0);
-        let index = target(current, len).clamp(0, len as isize - 1);
-        self.table.select(Some(index as usize));
+        move_selection(&mut self.table, len, target);
     }
+}
+
+/// Moves the selection of a table of `len` rows to `target(current, len)`, within bounds.
+fn move_selection(table: &mut TableState, len: usize, target: impl FnOnce(usize, usize) -> isize) {
+    if len == 0 {
+        return;
+    }
+    let current = table.selected().unwrap_or(0);
+    let index = target(current, len).clamp(0, len as isize - 1);
+    table.select(Some(index as usize));
+}
+
+/// Selects `found`, or keeps the current row within the `len` rows.
+fn select_or_clamp(table: &mut TableState, found: Option<usize>, len: usize) {
+    let index = match len {
+        0 => None,
+        _ => Some(found.unwrap_or(table.selected().unwrap_or(0)).min(len - 1)),
+    };
+    table.select(index);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// Jira issues above GitLab MRs.
+    Stacked,
+    /// Jira issues next to their MRs, then the MRs of no listed issue.
+    Split,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Jira,
+    /// MRs next to the issues (split view only).
+    LinkedMrs,
+    /// MRs pane (stacked view only).
     Gitlab,
 }
+
+/// A row of the split view: indexes of an issue and of an MR in the items of their pane.
+pub type SplitRow = (Option<usize>, Option<usize>);
+
+/// URLs of the issue and MR of the selected row of the split view.
+type SplitSelection = Option<(Option<String>, Option<String>)>;
 
 /// Review state of `mr`, given the review sessions and the reviews being set up.
 pub fn review_state(reviews: &[Session], starting: &[String], mr: &MergeRequest) -> ReviewState {
@@ -200,6 +232,11 @@ pub struct App {
     /// Calls made by the connectors, shown in the API calls pane.
     pub api_log: ApiLog,
     pub show_calls: bool,
+    pub view: View,
+    /// Split view rows: the issues with their MRs, then the MRs of no listed issue.
+    pub split_rows: Vec<SplitRow>,
+    /// Selected row of `split_rows`, shared by the issues and the MRs.
+    pub split_table: TableState,
 }
 
 impl App {
@@ -218,6 +255,9 @@ impl App {
             confirm_quit: false,
             api_log: ApiLog::default(),
             show_calls: false,
+            view: View::Stacked,
+            split_rows: Vec::new(),
+            split_table: TableState::default(),
         }
     }
 
@@ -230,9 +270,24 @@ impl App {
         self.reviews.iter().find(|s| s.subject == mr_reference)
     }
 
-    /// Review session of the MR selected in the GitLab pane.
+    /// Issue and MR of the selected row of the split view.
+    pub fn selected_link(&self) -> Option<(Option<&Issue>, Option<&MergeRequest>)> {
+        let (issue, mr) = *self.split_rows.get(self.split_table.selected()?)?;
+        let issue = issue.and_then(|i| self.jira.items().get(i));
+        Some((issue, mr.and_then(|m| self.gitlab.items().get(m))))
+    }
+
+    /// The MR the review keys and the Review pane act on.
+    pub fn selected_mr(&self) -> Option<&MergeRequest> {
+        match self.view {
+            View::Stacked => self.gitlab.selected(),
+            View::Split => self.selected_link()?.1,
+        }
+    }
+
+    /// Review session of the selected MR.
     pub fn selected_review(&self) -> Option<&Session> {
-        self.review_of(&self.gitlab.selected()?.reference)
+        self.review_of(&self.selected_mr()?.reference)
     }
 
     /// Captured screen of `session`, if any.
@@ -244,6 +299,7 @@ impl App {
     }
 
     pub fn on_msg(&mut self, msg: Msg) {
+        let selection = self.split_selection();
         match msg {
             Msg::Jira(result) => {
                 if result.is_ok() {
@@ -278,6 +334,7 @@ impl App {
         }
         // New items, or review states for the R column.
         self.sort_panes();
+        self.relink(selection);
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
@@ -302,28 +359,42 @@ impl App {
             }
             KeyCode::Char('r') => return Action::Refresh,
             KeyCode::Char('l') => self.show_calls = !self.show_calls,
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.focus = match self.focus {
-                    Focus::Jira => Focus::Gitlab,
-                    Focus::Gitlab => Focus::Jira,
+            KeyCode::Char('w') => {
+                (self.view, self.focus) = match (self.view, self.focus) {
+                    (View::Stacked, Focus::Gitlab) => (View::Split, Focus::LinkedMrs),
+                    (View::Stacked, focus) => (View::Split, focus),
+                    (View::Split, Focus::LinkedMrs) => (View::Stacked, Focus::Gitlab),
+                    (View::Split, focus) => (View::Stacked, focus),
                 };
             }
+            KeyCode::Tab => self.cycle_focus(true),
+            KeyCode::BackTab => self.cycle_focus(false),
             KeyCode::Enter => {
-                let url = match self.focus {
-                    Focus::Jira => self.jira.selected().map(|i| i.url().to_string()),
-                    Focus::Gitlab => self.gitlab.selected().map(|m| m.url().to_string()),
+                let url = match (self.view, self.focus) {
+                    (View::Stacked, Focus::Jira) => self.jira.selected().map(Item::url),
+                    (View::Split, Focus::Jira) => {
+                        self.selected_link().and_then(|(issue, _)| issue).map(Item::url)
+                    }
+                    _ => self.selected_mr().map(Item::url),
                 };
+                let url = url.map(str::to_string);
                 return url.map_or(Action::None, Action::Open);
             }
             KeyCode::Char('j') | KeyCode::Down => self.select(|current, _| current as isize + 1),
             KeyCode::Char('k') | KeyCode::Up => self.select(|current, _| current as isize - 1),
             KeyCode::Char('g') | KeyCode::Home => self.select(|_, _| 0),
             KeyCode::Char('G') | KeyCode::End => self.select(|_, len| len as isize - 1),
+            KeyCode::Char('s') if self.focus == Focus::LinkedMrs => {
+                self.message = Some(Notice::warning(
+                    "MRs follow their issue: sort the issues, or the MRs in the stacked view",
+                ));
+            }
             KeyCode::Char('s') => {
                 self.sorting = Some(self.focused_sort().map_or(0, |sort| sort.column));
             }
-            KeyCode::Char('v') if self.focus == Focus::Gitlab => return self.start_review(),
-            KeyCode::Char('a') if self.focus == Focus::Gitlab => {
+            // Review keys act on the MR panes.
+            KeyCode::Char('v') if self.focus != Focus::Jira => return self.start_review(),
+            KeyCode::Char('a') if self.focus != Focus::Jira => {
                 return match self.selected_review() {
                     Some(review) => Action::Attach(review.name.clone()),
                     None => {
@@ -333,7 +404,7 @@ impl App {
                     }
                 };
             }
-            KeyCode::Char(c @ ('x' | 'X')) if self.focus == Focus::Gitlab => {
+            KeyCode::Char(c @ ('x' | 'X')) if self.focus != Focus::Jira => {
                 return match self.selected_review() {
                     Some(review) if review.finished || c == 'X' => {
                         Action::CloseReview(review.name.clone())
@@ -352,7 +423,7 @@ impl App {
     }
 
     fn start_review(&mut self) -> Action {
-        let Some(mr) = self.gitlab.selected().cloned() else {
+        let Some(mr) = self.selected_mr().cloned() else {
             return Action::None;
         };
         if self.review_of(&mr.reference).is_some() {
@@ -364,7 +435,7 @@ impl App {
             return Action::None;
         }
         self.starting.push(mr.reference.clone());
-        self.sort_panes();
+        self.resort();
         Action::StartReview(Box::new(mr))
     }
 
@@ -373,7 +444,7 @@ impl App {
     fn on_sort_key(&mut self, key: KeyEvent, column: usize) -> Action {
         let last = match self.focus {
             Focus::Jira => ISSUE_COLUMNS.len() - 1,
-            Focus::Gitlab => MR_COLUMNS.len() - 1,
+            _ => MR_COLUMNS.len() - 1,
         };
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -384,12 +455,12 @@ impl App {
             KeyCode::Enter => {
                 let sort = match self.focus {
                     Focus::Jira => &mut self.jira.sort,
-                    Focus::Gitlab => &mut self.gitlab.sort,
+                    _ => &mut self.gitlab.sort,
                 };
                 let descending = matches!(sort, Some(s) if s.column == column && !s.descending);
                 *sort = Some(Sort { column, descending });
                 self.sorting = None;
-                self.sort_panes();
+                self.resort();
             }
             KeyCode::Char('s' | 'q') | KeyCode::Esc => self.sorting = None,
             _ => {}
@@ -400,8 +471,25 @@ impl App {
     pub fn focused_sort(&self) -> Option<Sort> {
         match self.focus {
             Focus::Jira => self.jira.sort,
-            Focus::Gitlab => self.gitlab.sort,
+            _ => self.gitlab.sort,
         }
+    }
+
+    fn cycle_focus(&mut self, forward: bool) {
+        let order: &[Focus] = match self.view {
+            View::Stacked => &[Focus::Jira, Focus::Gitlab],
+            View::Split => &[Focus::Jira, Focus::LinkedMrs],
+        };
+        let len = order.len();
+        let current = order.iter().position(|f| *f == self.focus).unwrap_or(0);
+        self.focus = order[if forward { (current + 1) % len } else { (current + len - 1) % len }];
+    }
+
+    /// Sorts the panes, keeping the selection of the split view.
+    fn resort(&mut self) {
+        let selection = self.split_selection();
+        self.sort_panes();
+        self.relink(selection);
     }
 
     fn sort_panes(&mut self) {
@@ -412,10 +500,35 @@ impl App {
         });
     }
 
+    fn split_selection(&self) -> SplitSelection {
+        let (issue, mr) = self.selected_link()?;
+        Some((issue.map(|i| i.url.clone()), mr.map(|m| m.url.clone())))
+    }
+
+    /// Recomputes the split view rows from the panes, keeping `selection`
+    /// selected when it is still listed.
+    fn relink(&mut self, selection: SplitSelection) {
+        let (issues, mrs) = (self.jira.items(), self.gitlab.items());
+        let links = link(issues, mrs);
+        let others = links.others.into_iter().map(|m| (None, Some(m)));
+        self.split_rows = links.rows.into_iter().map(|(i, m)| (Some(i), m)).chain(others).collect();
+        let issue_url = |i: Option<usize>| i.map(|i| issues[i].url.as_str());
+        let mr_url = |m: Option<usize>| m.map(|m| mrs[m].url.as_str());
+        let found = selection.and_then(|(issue, mr)| {
+            self.split_rows
+                .iter()
+                .position(|&(i, m)| issue_url(i) == issue.as_deref() && mr_url(m) == mr.as_deref())
+        });
+        select_or_clamp(&mut self.split_table, found, self.split_rows.len());
+    }
+
     fn select(&mut self, target: impl FnOnce(usize, usize) -> isize) {
-        match self.focus {
-            Focus::Jira => self.jira.select(target),
-            Focus::Gitlab => self.gitlab.select(target),
+        match (self.view, self.focus) {
+            (View::Stacked, Focus::Jira) => self.jira.select(target),
+            (View::Stacked, _) => self.gitlab.select(target),
+            (View::Split, _) => {
+                move_selection(&mut self.split_table, self.split_rows.len(), target)
+            }
         }
     }
 }
@@ -449,6 +562,7 @@ pub mod tests {
             project: "group/project".into(),
             iid: iid.into(),
             title: format!("MR {iid}"),
+            description: String::new(),
             draft: false,
             merge_status: "mergeable".into(),
             pipeline: None,
@@ -459,6 +573,25 @@ pub mod tests {
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: format!("https://gitlab.com/group/project/-/merge_requests/{iid}"),
         }
+    }
+
+    /// An MR whose branch refers to the issue `key`.
+    pub fn linked_mr(iid: u32, key: &str) -> MergeRequest {
+        MergeRequest { source_branch: format!("{key}-work"), ..mr(iid) }
+    }
+
+    /// Split view of PAY-1 (MRs 1 and 3), PAY-2 (no MR), PAY-3 (MR 4); MR 2 is linked to no issue.
+    pub fn split_app() -> App {
+        let mut app = App::new(true, true, "config.toml".into());
+        app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), issue("PAY-2"), issue("PAY-3")])));
+        app.on_msg(Msg::Gitlab(Ok(vec![
+            linked_mr(1, "PAY-1"),
+            mr(2),
+            linked_mr(3, "PAY-1"),
+            linked_mr(4, "PAY-3"),
+        ])));
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        app
     }
 
     pub fn session(iid: u32, finished: bool) -> Session {
@@ -757,6 +890,88 @@ pub mod tests {
 
         app.on_msg(Msg::Reviews(vec![session(3, true), session(2, false)]));
         assert_eq!(iids(&app), [2, 3, 1]);
+    }
+
+    #[test]
+    fn w_toggles_the_split_view_and_tab_cycles_its_panes() {
+        let mut app = split_app();
+        assert_eq!(app.view, View::Split);
+        // The MR of no listed issue comes last.
+        assert_eq!(
+            app.split_rows,
+            [(Some(0), Some(0)), (Some(0), Some(2)), (Some(1), None), (Some(2), Some(3)), (None, Some(1))]
+        );
+
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::LinkedMrs);
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Jira);
+        app.on_key(key(KeyCode::BackTab));
+        assert_eq!(app.focus, Focus::LinkedMrs);
+
+        // Each view has its own MRs pane.
+        app.on_key(key(KeyCode::Char('w')));
+        assert_eq!((app.view, app.focus), (View::Stacked, Focus::Gitlab));
+        app.on_key(key(KeyCode::Char('w')));
+        assert_eq!((app.view, app.focus), (View::Split, Focus::LinkedMrs));
+    }
+
+    #[test]
+    fn split_rows_are_shared_and_enter_opens_the_focused_side() {
+        let mut app = split_app();
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.split_table.selected(), Some(1));
+        let open = |app: &mut App| app.on_key(key(KeyCode::Enter));
+        assert_eq!(open(&mut app), Action::Open(issue("PAY-1").url));
+
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(open(&mut app), Action::Open(mr(3).url));
+        assert_eq!(app.selected_mr().map(|m| m.iid), Some(3));
+        // An issue without MR has nothing to open on the right.
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(open(&mut app), Action::None);
+        assert_eq!(app.selected_mr(), None);
+
+        // An MR of no listed issue has nothing to open on the left.
+        app.on_key(key(KeyCode::Char('G')));
+        assert_eq!(open(&mut app), Action::Open(mr(2).url));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(open(&mut app), Action::None);
+        assert_eq!(app.selected_mr().map(|m| m.iid), Some(2));
+    }
+
+    #[test]
+    fn review_keys_act_on_the_linked_mrs() {
+        let mut app = split_app();
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+
+        app.on_key(key(KeyCode::Tab));
+        let action = app.on_key(key(KeyCode::Char('v')));
+        assert_eq!(action, Action::StartReview(Box::new(linked_mr(1, "PAY-1"))));
+
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(app.sorting, None);
+        assert!(app.message.as_ref().unwrap().text.contains("MRs follow their issue"));
+    }
+
+    #[test]
+    fn split_selection_is_kept_across_refreshes() {
+        let mut app = split_app();
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Char('j')));
+        }
+        let selected_key = |app: &App| app.selected_link().and_then(|(i, _)| i).map(|i| i.key.clone());
+        assert_eq!(selected_key(&app).as_deref(), Some("PAY-3"));
+
+        let issues = vec![issue("PAY-9"), issue("PAY-1"), issue("PAY-2"), issue("PAY-3")];
+        app.on_msg(Msg::Jira(Ok(issues)));
+        assert_eq!(app.split_table.selected(), Some(4));
+        assert_eq!(selected_key(&app).as_deref(), Some("PAY-3"));
+
+        // PAY-3 is gone: its MR joins the MRs of no listed issue.
+        app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1")])));
+        assert_eq!(app.split_rows.len(), 4);
+        assert_eq!(app.split_table.selected(), Some(3));
     }
 
     #[test]

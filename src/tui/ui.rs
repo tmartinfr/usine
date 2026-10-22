@@ -6,10 +6,11 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
+use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest, Role, StatusCategory};
 
-use super::app::{App, Content, Focus, Item, Level, Pane, review_state};
+use super::app::{App, Content, Focus, Item, Level, Pane, View, review_state};
 use super::sort::{
     ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, merge_readiness, pipeline_rank, priority_rank,
 };
@@ -23,21 +24,41 @@ const MUTED: Color = Color::DarkGray;
 /// A table cell: text and style.
 type Styled = (String, Style);
 
+/// Columns of the MRs in the split view, as indexes into `MR_COLUMNS`.
+const SPLIT_MR_CELLS: [usize; 6] = [0, 1, 2, 3, 4, 6];
+
 pub fn render(frame: &mut Frame, app: &mut App) {
     let review_height = match app.selected_review() {
         Some(_) => Constraint::Fill(2),
         None => Constraint::Length(3),
     };
     let calls_height = if app.show_calls { Constraint::Fill(1) } else { Constraint::Length(0) };
+    // The split view uses the height of both stacked panes.
+    let middle_height = match app.view {
+        View::Stacked => Constraint::Fill(1),
+        View::Split => Constraint::Length(0),
+    };
     let [top, middle, bottom, calls, footer] = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Fill(1),
+        middle_height,
         review_height,
         calls_height,
         Constraint::Length(1),
     ])
     .areas(frame.area());
 
+    match app.view {
+        View::Stacked => render_stacked(frame, top, middle, app),
+        View::Split => render_split(frame, top, app),
+    }
+    render_review(frame, bottom, app);
+    if app.show_calls {
+        render_calls(frame, calls, app);
+    }
+    render_footer(frame, footer, app);
+}
+
+fn render_stacked(frame: &mut Frame, top: Rect, middle: Rect, app: &mut App) {
     render_pane(
         frame,
         top,
@@ -53,28 +74,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         &mut app.jira,
     );
     let (reviews, starting) = (&app.reviews, &app.starting);
-    let merge_request_row = |mr: &MergeRequest| {
-        let marker = match review_state(reviews, starting, mr) {
-            ReviewState::Starting => ("~".to_string(), Style::new().fg(Color::Yellow).bold()),
-            ReviewState::Finished => ("*".to_string(), Style::new().fg(Color::Blue).bold()),
-            ReviewState::Running => ("*".to_string(), Style::new().fg(Color::Green).bold()),
-            ReviewState::Absent => (" ".to_string(), Style::new()),
-        };
-        let title_style = if mr.draft { Style::new().fg(MUTED).italic() } else { Style::new() };
-        let role = match mr.role {
-            Role::Author => ("author".to_string(), Style::new().fg(MUTED)),
-            Role::Reviewer => ("reviewer".to_string(), Style::new().fg(Color::LightBlue)),
-        };
-        vec![
-            marker,
-            role,
-            (mr.reference.clone(), Style::new().bold()),
-            (mr.merge_status.clone(), Style::new().fg(merge_status_color(&mr.merge_status))),
-            pipeline_cell(mr.pipeline.as_deref()),
-            updated_cell(mr.updated),
-            (mr.title.clone(), title_style),
-        ]
-    };
+    let merge_request_row = |mr: &MergeRequest| merge_request_row(mr, reviews, starting);
     render_pane(
         frame,
         middle,
@@ -89,11 +89,66 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         },
         &mut app.gitlab,
     );
-    render_review(frame, bottom, app);
-    if app.show_calls {
-        render_calls(frame, calls, app);
+}
+
+/// Issues on the left, their MRs on the right, then the MRs of no listed issue.
+fn render_split(frame: &mut Frame, area: Rect, app: &mut App) {
+    let [left, right] = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
+    let (issues, mrs) = (app.jira.items(), app.gitlab.items());
+    let blank = |count: usize| vec![(String::new(), Style::new()); count];
+    let (mut issue_rows, mut mr_rows) = (Vec::new(), Vec::new());
+    for (n, &(issue, mr)) in app.split_rows.iter().enumerate() {
+        // An issue with several MRs is shown on its first row only.
+        let first = n == 0 || app.split_rows[n - 1].0 != issue;
+        issue_rows.push(match issue {
+            Some(issue) if first => issue_row(&issues[issue]),
+            _ => blank(ISSUE_COLUMNS.len()),
+        });
+        mr_rows.push(match mr {
+            Some(mr) => {
+                let cells = merge_request_row(&mrs[mr], &app.reviews, &app.starting);
+                SPLIT_MR_CELLS.iter().map(|&c| cells[c].clone()).collect()
+            }
+            None => blank(SPLIT_MR_CELLS.len()),
+        });
     }
-    render_footer(frame, footer, app);
+    let jira_count = matches!(app.jira.content, Content::Loaded(_)).then_some(issues.len());
+    let gitlab_count = matches!(app.gitlab.content, Content::Loaded(_)).then_some(mrs.len());
+
+    // The focused side is highlighted, the other side of the same row is bold.
+    let focus = app.focus;
+    let highlight = |side: Focus| match focus {
+        f if f == side => Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        _ => Style::new().bold(),
+    };
+
+    // Once loaded, a side shows its rows even when it has no item of its own.
+    let block = titled_block("Jira issues", jira_count, app.jira.loading, focus == Focus::Jira);
+    let text = placeholder(&app.jira.content, "[jira]", &app.config_path);
+    match text.filter(|_| jira_count.is_none()) {
+        Some(text) => render_message(frame, left, block, text),
+        None => {
+            let header = header_labels(&ISSUE_COLUMNS, app.jira.sort);
+            let choosing = app.sorting.filter(|_| focus == Focus::Jira);
+            let style = highlight(Focus::Jira);
+            let table = &mut app.split_table;
+            render_table(frame, left, block, header, choosing, issue_rows, style, table);
+        }
+    }
+
+    // Same rows and selection as the issues: both sides scroll together.
+    let mut split_table = app.split_table;
+    let focused = focus == Focus::LinkedMrs;
+    let block = titled_block("GitLab MRs", gitlab_count, app.gitlab.loading, focused);
+    let text = placeholder(&app.gitlab.content, "[gitlab]", &app.config_path);
+    match text.filter(|_| gitlab_count.is_none()) {
+        Some(text) => render_message(frame, right, block, text),
+        None => {
+            let header = SPLIT_MR_CELLS.iter().map(|&c| MR_COLUMNS[c].to_string()).collect();
+            let style = highlight(Focus::LinkedMrs);
+            render_table(frame, right, block, header, None, mr_rows, style, &mut split_table);
+        }
+    }
 }
 
 struct PaneView<'a, T> {
@@ -105,6 +160,30 @@ struct PaneView<'a, T> {
     /// Column highlighted while choosing the sort column.
     choosing: Option<usize>,
     config_path: &'a str,
+}
+
+/// Cells of `MR_COLUMNS`.
+fn merge_request_row(mr: &MergeRequest, reviews: &[Session], starting: &[String]) -> Vec<Styled> {
+    let marker = match review_state(reviews, starting, mr) {
+        ReviewState::Starting => ("~".to_string(), Style::new().fg(Color::Yellow).bold()),
+        ReviewState::Finished => ("*".to_string(), Style::new().fg(Color::Blue).bold()),
+        ReviewState::Running => ("*".to_string(), Style::new().fg(Color::Green).bold()),
+        ReviewState::Absent => (" ".to_string(), Style::new()),
+    };
+    let title_style = if mr.draft { Style::new().fg(MUTED).italic() } else { Style::new() };
+    let role = match mr.role {
+        Role::Author => ("author".to_string(), Style::new().fg(MUTED)),
+        Role::Reviewer => ("reviewer".to_string(), Style::new().fg(Color::LightBlue)),
+    };
+    vec![
+        marker,
+        role,
+        (mr.reference.clone(), Style::new().bold()),
+        (mr.merge_status.clone(), Style::new().fg(merge_status_color(&mr.merge_status))),
+        pipeline_cell(mr.pipeline.as_deref()),
+        updated_cell(mr.updated),
+        (mr.title.clone(), title_style),
+    ]
 }
 
 fn issue_row(issue: &Issue) -> Vec<Styled> {
@@ -167,42 +246,72 @@ fn pane_block<'a>(title: Vec<Span<'a>>, border: Color) -> Block<'a> {
         .border_style(Style::new().fg(border))
 }
 
-fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: &mut Pane<T>) {
-    let (border, title_style) = if view.focused {
+/// Bordered block titled `name (count)`, highlighted when focused.
+fn titled_block(name: &str, count: Option<usize>, loading: bool, focused: bool) -> Block<'static> {
+    let (border, title_style) = if focused {
         (ACCENT, Style::new().fg(ACCENT).bold())
     } else {
         (MUTED, Style::new().bold())
     };
-    let mut title = vec![Span::styled(format!(" {} ", view.title), title_style)];
-    if let Content::Loaded(items) = &pane.content {
-        title.push(Span::styled(format!("({}) ", items.len()), Style::new().fg(MUTED)));
+    let mut title = vec![Span::styled(format!(" {name} "), title_style)];
+    if let Some(count) = count {
+        title.push(Span::styled(format!("({count}) "), Style::new().fg(MUTED)));
     }
-    if pane.loading {
+    if loading {
         title.push(Span::styled("(refreshing) ", Style::new().fg(Color::Yellow)));
     }
-    let block = pane_block(title, border);
+    pane_block(title, border)
+}
 
-    let items = match &pane.content {
-        Content::Loaded(items) if !items.is_empty() => items,
-        content => {
-            let text = match content {
-                Content::NotConfigured => Line::from(format!(
-                    "No {} section in {}",
-                    view.section, view.config_path
-                ))
-                .fg(Color::Yellow),
-                Content::Pending => Line::from("Loading...").fg(MUTED).italic(),
-                Content::Failed(err) => Line::from(err.as_str()).fg(Color::Red),
-                Content::Loaded(_) => Line::from("Nothing to show.").fg(MUTED),
-            };
-            let paragraph = Paragraph::new(text).wrap(Wrap { trim: true }).block(block);
-            frame.render_widget(paragraph, area);
-            return;
+/// What to show instead of the table when `content` has no item.
+fn placeholder<T>(content: &Content<T>, section: &str, config_path: &str) -> Option<Line<'static>> {
+    Some(match content {
+        Content::Loaded(items) if !items.is_empty() => return None,
+        Content::NotConfigured => {
+            Line::from(format!("No {section} section in {config_path}")).fg(Color::Yellow)
         }
-    };
+        Content::Pending => Line::from("Loading...").fg(MUTED).italic(),
+        Content::Failed(err) => Line::from(err.clone()).fg(Color::Red),
+        Content::Loaded(_) => Line::from("Nothing to show.").fg(MUTED),
+    })
+}
 
-    let rows: Vec<Vec<Styled>> = items.iter().map(view.row).collect();
+fn render_message(frame: &mut Frame, area: Rect, block: Block, text: Line) {
+    frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }).block(block), area);
+}
+
+fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: &mut Pane<T>) {
+    let count = match &pane.content {
+        Content::Loaded(items) => Some(items.len()),
+        _ => None,
+    };
+    let block = titled_block(view.title, count, pane.loading, view.focused);
+    if let Some(text) = placeholder(&pane.content, view.section, view.config_path) {
+        render_message(frame, area, block, text);
+        return;
+    }
+    let rows = pane.items().iter().map(view.row).collect();
     let header = header_labels(view.header, pane.sort);
+    let highlight = if view.focused {
+        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::new()
+    };
+    render_table(frame, area, block, header, view.choosing, rows, highlight, &mut pane.table);
+}
+
+/// Table with a highlighted header cell while choosing the sort column.
+#[allow(clippy::too_many_arguments)]
+fn render_table(
+    frame: &mut Frame,
+    area: Rect,
+    block: Block,
+    header: Vec<String>,
+    choosing: Option<usize>,
+    rows: Vec<Vec<Styled>>,
+    highlight: Style,
+    state: &mut TableState,
+) {
     let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for row in &rows {
         for (width, (cell, _)) in widths.iter_mut().zip(row) {
@@ -215,17 +324,12 @@ fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: 
         i if i == last => Constraint::Fill(1),
         _ => Constraint::Length(w as u16),
     });
-    let highlight = if view.focused {
-        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-    } else {
-        Style::new()
-    };
     let rows = rows.into_iter().map(|row| {
         Row::new(row.into_iter().map(|(text, style)| Cell::from(text).style(style)))
     });
     let header = Row::new(header.into_iter().enumerate().map(|(i, label)| {
         let cell = Cell::from(label);
-        if view.choosing == Some(i) { cell.reversed() } else { cell }
+        if choosing == Some(i) { cell.reversed() } else { cell }
     }))
     .style(Style::new().fg(Color::Yellow).bold().underlined());
     let table = Table::new(rows, constraints)
@@ -233,7 +337,7 @@ fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: 
         .column_spacing(2)
         .row_highlight_style(highlight)
         .block(block);
-    frame.render_stateful_widget(table, area, &mut pane.table);
+    frame.render_stateful_widget(table, area, state);
 }
 
 /// Column names, with `^` (ascending) or `v` (descending) on the sort column.
@@ -253,7 +357,7 @@ fn header_labels(columns: &[&str], sort: Option<Sort>) -> Vec<String> {
 /// Live view of the review session of the selected MR.
 fn render_review(frame: &mut Frame, area: Rect, app: &App) {
     let title_style = Style::new().fg(CLAUDE).bold();
-    let Some(mr) = app.gitlab.selected() else {
+    let Some(mr) = app.selected_mr() else {
         let block = pane_block(vec![Span::styled(" Review ", title_style)], MUTED);
         let text = Line::from("No merge request selected.").fg(MUTED);
         frame.render_widget(Paragraph::new(text).block(block), area);
@@ -343,7 +447,7 @@ const SORT_KEYS: [(&str, &str); 3] = [
     ("Esc", "cancel"),
 ];
 
-const KEYS: [(&str, &str); 10] = [
+const KEYS: [(&str, &str); 11] = [
     ("Tab", "switch"),
     ("j/k", "move"),
     ("Enter", "open"),
@@ -352,6 +456,7 @@ const KEYS: [(&str, &str); 10] = [
     ("v", "review"),
     ("a", "attach"),
     ("x", "close"),
+    ("w", "view"),
     ("l", "calls"),
     ("q", "quit"),
 ];
@@ -397,10 +502,10 @@ mod tests {
 
     use super::*;
     use crate::tui::app::{Msg, Notice};
-    use crate::tui::app::tests::{issue, mr, session};
+    use crate::tui::app::tests::{issue, mr, session, split_app};
 
     fn draw_buffer(app: &mut App) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(110, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(130, 24)).unwrap();
         terminal.draw(|frame| render(frame, app)).unwrap();
         terminal.backend().buffer().clone()
     }
@@ -576,6 +681,36 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(draw(&mut app).contains("PRIORITY v"));
+    }
+
+    #[test]
+    fn split_view_shows_issues_next_to_their_mrs() {
+        let mut app = split_app();
+        let screen = draw(&mut app);
+        let line = |text: &str| screen.lines().find(|l| l.contains(text)).unwrap_or_default();
+
+        assert!(screen.contains("Jira issues (3)"), "{screen}");
+        assert!(screen.contains("GitLab MRs (4)"), "{screen}");
+        assert!(!screen.contains("Other"), "{screen}");
+        assert!(screen.contains("w: view"), "{screen}");
+        assert!(line("PAY-1 ").contains("author  group/project!1 "), "{screen}");
+        // Second MR of PAY-1: the issue cells are blank.
+        assert!(!line("group/project!3").contains("PAY-"), "{screen}");
+        assert!(!line("PAY-2 ").contains("group/project"), "{screen}");
+        assert!(line("PAY-3 ").contains("group/project!4"), "{screen}");
+        // The MR of no listed issue comes last, without issue.
+        let lines: Vec<&str> = screen.lines().collect();
+        let last_mr = lines.iter().position(|l| l.contains("group/project!2")).unwrap();
+        let pay_3 = lines.iter().position(|l| l.contains("PAY-3 ")).unwrap();
+        assert!(last_mr > pay_3, "{screen}");
+        assert!(!lines[last_mr].contains("PAY-"), "{screen}");
+
+        // Both sides of the selected row are highlighted, the focused one reversed.
+        let buffer = draw_buffer(&mut app);
+        assert!(style_of(&buffer, "PAY-1").add_modifier.contains(Modifier::REVERSED));
+        let mr_style = style_of(&buffer, "group/project!1");
+        assert!(mr_style.add_modifier.contains(Modifier::BOLD));
+        assert!(!mr_style.add_modifier.contains(Modifier::REVERSED));
     }
 
     #[test]

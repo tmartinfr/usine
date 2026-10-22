@@ -50,6 +50,8 @@ pub struct MergeRequest {
     /// Number of the MR within its project.
     pub iid: u64,
     pub title: String,
+    /// Empty when the merge request has none.
+    pub description: String,
     pub draft: bool,
     pub merge_status: String,
     /// Status of the latest pipeline (`success`, `failed`, `running`...), None without pipeline.

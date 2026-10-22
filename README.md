@@ -68,7 +68,7 @@ The screen shows three panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
 - **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
-- **Review**: the live screen of the Claude review of the merge request selected in the GitLab pane.
+- **Review**: the live screen of the Claude review of the selected merge request.
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
 
 Up to 100 items are shown per pane. Data is loaded in the background when the interface starts, then refreshed automatically every 5 minutes. A pane whose connector is not configured shows which config section is missing; a pane whose source fails shows the error, while the other pane keeps working.
@@ -87,12 +87,12 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 + Review group/backend/api!42 [running]  a: attach ---------------------------+
 | * Reading the diff of group/backend/api!42...                               |
 +-----------------------------------------------------------------------------+
- Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  l: calls  q: quit
+ Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  w: view  l: calls  q: quit
 ```
 
 | Key                     | Action                                              |
 |-------------------------|-----------------------------------------------------|
-| `Tab` / `Shift-Tab`     | Switch between the two panes                        |
+| `Tab` / `Shift-Tab`     | Switch to the next / previous pane                  |
 | `j` / `Down`            | Next row                                            |
 | `k` / `Up`              | Previous row                                        |
 | `g` / `Home`            | First row                                           |
@@ -100,13 +100,37 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `Enter`                 | Open the selected issue or merge request in your browser |
 | `s`                     | Choose the column to sort the pane on (see below)   |
 | `r`                     | Refresh both panes now                              |
-| `v`                     | Start a Claude review of the selected merge request (GitLab pane) |
-| `a`                     | Attach to the review of the selected merge request (GitLab pane) |
-| `x`                     | Close a finished review (GitLab pane)               |
-| `X`                     | Close a review even if Claude is still running (GitLab pane) |
+| `v`                     | Start a Claude review of the selected merge request (merge request panes) |
+| `a`                     | Attach to the review of the selected merge request (merge request panes) |
+| `x`                     | Close a finished review (merge request panes)       |
+| `X`                     | Close a review even if Claude is still running (merge request panes) |
+| `w`                     | Switch between the stacked view and the split view (see below) |
 | `l`                     | Show or hide the API calls pane                     |
 | `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
 | `Ctrl-C`                | Quit immediately                                    |
+
+#### Split view
+
+Press `w` to show each Jira issue next to its merge requests, and `w` again to come back to the stacked view:
+
+```
++ Jira issues (3) -------------------------++ GitLab MRs (4) ---------------------------------------+
+|KEY      STATUS ^     SUMMARY             ||R  ROLE      MR                    STATUS        TITLE  |
+|PAY-123  In Progress  Fix the payment ... ||*  author    group/backend/api!42  not_approved  Add... |
+|                                          ||   author    group/backend/api!45  mergeable     Ret... |
+|OPS-7    To Do        Rotate staging c... ||                                                       |
+|PAY-130  Testing      Drop unused fiel... ||   reviewer  group/web!310         mergeable     Rem... |
+|                                          ||   author    group/infra!7         draft_status  Dra... |
++------------------------------------------++-------------------------------------------------------+
+```
+
+- **Jira issues** (left) and **GitLab MRs** (right) share their rows. A merge request is linked to an issue when the issue key (e.g. `PAY-123`, case ignored) appears in its source branch, its title or its description, as GitLab does for Jira. An issue with several merge requests takes one row per merge request; an issue without merge request has an empty right side. A merge request mentioning several listed issues is shown next to each of them.
+- The merge requests linked to none of the listed issues come last, with an empty left side.
+- Only the listed merge requests (yours and those you review) can be linked; this view makes no extra request.
+- `Tab` switches between the two sides; moving on either side moves both. `Enter` opens the issue on the left, the merge request on the right. `v`, `a` and `x` act on the merge request of the selected row, which the Review pane follows.
+- `s` sorts the issues (left). The merge requests follow their issue, in the order of the GitLab sort, which can be changed from the stacked view.
+
+#### Sorting
 
 Press `s` to sort the focused pane: the header of a column is highlighted; move it with `h` / `Left` and `l` / `Right`, then press `Enter` to sort on that column. Choosing the column the pane is already sorted on reverses the order, so `s` then `Enter` flips the current sort. `Esc` (or `s` again) cancels. The sort column shows `^` (ascending) or `v` (descending) next to its name, the selected row stays selected, and the sort is kept when the pane refreshes. By default, Jira issues are sorted by `STATUS` and merge requests by `ROLE` (yours first, then those you review); items that compare equal keep the order of the source, most recently updated first.
 
@@ -122,6 +146,8 @@ Ascending order means:
 - `PIPELINE`: passed, in progress or waiting, failed, canceled or skipped, then merge requests without pipeline.
 - `UPDATED`: oldest first.
 - `SUMMARY` / `TITLE`: alphabetical, ignoring case.
+
+#### Colors
 
 Colors help scanning the panes:
 
@@ -244,6 +270,7 @@ JSON output (one object per merge request):
   "project": "group/backend/api",
   "iid": 42,
   "title": "Add retry on payment webhook",
+  "description": "Retries the webhook when it times out. Closes PAY-123.",
   "draft": false,
   "merge_status": "not_approved",
   "pipeline": "running",
@@ -256,7 +283,7 @@ JSON output (one object per merge request):
 }
 ```
 
-`pipeline` is `null` when the merge request has no pipeline. `role` is always `author` for this command.
+`pipeline` is `null` when the merge request has no pipeline. `description` is empty when the merge request has none. `role` is always `author` for this command.
 
 ### Output and errors
 
