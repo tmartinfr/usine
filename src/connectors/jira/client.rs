@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 
 use super::JiraConfig;
+use crate::api_log::ApiLog;
 use super::api::{ErrorResponse, FIELDS, SearchResponse};
 use crate::model::Issue;
 
@@ -13,6 +14,7 @@ pub struct JiraClient {
     base_url: String,
     email: String,
     api_token: String,
+    log: ApiLog,
 }
 
 impl JiraClient {
@@ -26,7 +28,14 @@ impl JiraClient {
             base_url: config.url.trim_end_matches('/').to_string(),
             email: config.email.clone(),
             api_token: config.api_token.clone(),
+            log: ApiLog::default(),
         })
+    }
+
+    /// Records every call in `log`.
+    pub fn with_log(mut self, log: ApiLog) -> Self {
+        self.log = log;
+        self
     }
 
     /// Returns at most `limit` issues matching `jql`, following pagination.
@@ -42,12 +51,14 @@ impl JiraClient {
                 query.push(("nextPageToken", token));
             }
 
-            let response = self
+            let request = self
                 .http
                 .get(&url)
                 .basic_auth(&self.email, Some(&self.api_token))
-                .query(&query)
-                .send()
+                .query(&query);
+            let response = self
+                .log
+                .send(request)
                 .await
                 .with_context(|| format!("request to {url} failed"))?;
 

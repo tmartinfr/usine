@@ -5,6 +5,7 @@ use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{GitlabClient, GitlabConfig};
+use crate::api_log::ApiLog;
 use crate::model::Role;
 
 fn client(server: &MockServer) -> GitlabClient {
@@ -119,6 +120,26 @@ async fn lists_merge_requests_to_review_except_approved_ones() {
     let iids: Vec<u64> = mrs.iter().map(|m| m.iid).collect();
     assert_eq!(iids, [1, 3]);
     assert!(mrs.iter().all(|m| m.role == Role::Reviewer));
+}
+
+#[tokio::test]
+async fn records_calls_without_the_token() {
+    let server = MockServer::start().await;
+    mount_details(&server, 1).await;
+    Mock::given(method("GET"))
+        .and(path("/api/v4/merge_requests"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([raw_mr(1)])))
+        .mount(&server)
+        .await;
+    let log = ApiLog::default();
+
+    client(&server).with_log(log.clone()).my_open_merge_requests(10).await.unwrap();
+
+    let calls = log.calls();
+    assert_eq!(calls.len(), 2);
+    assert!(calls[0].url.contains("/api/v4/merge_requests?state=opened"), "{}", calls[0].url);
+    assert!(calls[1].url.ends_with("/api/v4/projects/100/merge_requests/1"));
+    assert!(calls.iter().all(|c| c.outcome == Ok(200) && !c.url.contains("glpat-secret")));
 }
 
 #[tokio::test]

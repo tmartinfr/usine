@@ -69,6 +69,7 @@ The screen shows three panes, one above the other:
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
 - **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard), most recently updated first. The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
 - **Review**: the live screen of the Claude review of the merge request selected in the GitLab pane.
+- **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
 
 Up to 100 items are shown per pane. Data is loaded in the background when the interface starts, then refreshed automatically every 5 minutes. A pane whose connector is not configured shows which config section is missing; a pane whose source fails shows the error, while the other pane keeps working.
 
@@ -86,7 +87,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 + Review group/backend/api!42 [running]  a: attach ---------------------------+
 | * Reading the diff of group/backend/api!42...                               |
 +-----------------------------------------------------------------------------+
- Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  q: quit
+ Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  l: calls  q: quit
 ```
 
 | Key                     | Action                                              |
@@ -103,6 +104,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `a`                     | Attach to the review of the selected merge request (GitLab pane) |
 | `x`                     | Close a finished review (GitLab pane)               |
 | `X`                     | Close a review even if Claude is still running (GitLab pane) |
+| `l`                     | Show or hide the API calls pane                     |
 | `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
 | `Ctrl-C`                | Quit immediately                                    |
 

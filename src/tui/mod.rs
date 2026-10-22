@@ -16,6 +16,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, enable_raw_mode};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use usine::api_log::ApiLog;
 use usine::config::Config;
 use usine::connectors::claude::{ClaudeConfig, Tmux};
 use usine::connectors::git::GitConfig;
@@ -41,13 +42,16 @@ struct Sources {
 }
 
 impl Sources {
-    fn new(config: &Config) -> Result<Self> {
+    fn new(config: &Config, log: &ApiLog) -> Result<Self> {
         let jira = match &config.jira {
-            Some(jira) => Some((JiraClient::new(jira)?, jira.effective_jql().to_string())),
+            Some(jira) => {
+                let client = JiraClient::new(jira)?.with_log(log.clone());
+                Some((client, jira.effective_jql().to_string()))
+            }
             None => None,
         };
         let gitlab = match &config.gitlab {
-            Some(gitlab) => Some((GitlabClient::new(gitlab)?, gitlab.clone())),
+            Some(gitlab) => Some((GitlabClient::new(gitlab)?.with_log(log.clone()), gitlab.clone())),
             None => None,
         };
         Ok(Self {
@@ -143,12 +147,14 @@ fn merge_lists(
 
 /// Must be called from within the tokio runtime.
 pub fn run(config: Config, config_path: &Path) -> Result<()> {
-    let sources = Sources::new(&config)?;
+    let api_log = ApiLog::default();
+    let sources = Sources::new(&config, &api_log)?;
     let mut app = App::new(
         sources.jira.is_some(),
         sources.gitlab.is_some(),
         config_path.display().to_string(),
     );
+    app.api_log = api_log;
     let (tx, rx) = unbounded_channel();
 
     // ratatui::init also installs a panic hook that restores the terminal.

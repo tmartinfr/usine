@@ -28,10 +28,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Some(_) => Constraint::Fill(2),
         None => Constraint::Length(3),
     };
-    let [top, middle, bottom, footer] = Layout::vertical([
+    let calls_height = if app.show_calls { Constraint::Fill(1) } else { Constraint::Length(0) };
+    let [top, middle, bottom, calls, footer] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Fill(1),
         review_height,
+        calls_height,
         Constraint::Length(1),
     ])
     .areas(frame.area());
@@ -88,6 +90,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         &mut app.gitlab,
     );
     render_review(frame, bottom, app);
+    if app.show_calls {
+        render_calls(frame, calls, app);
+    }
     render_footer(frame, footer, app);
 }
 
@@ -294,13 +299,51 @@ fn render_review(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// Calls made by the connectors, latest at the bottom.
+fn render_calls(frame: &mut Frame, area: Rect, app: &App) {
+    let calls = app.api_log.calls();
+    let title = vec![
+        Span::styled(" API calls ", Style::new().bold()),
+        Span::styled(format!("({}) ", calls.len()), Style::new().fg(MUTED)),
+        Span::styled(" l", Style::new().fg(ACCENT).bold()),
+        Span::styled(": hide ", Style::new().fg(MUTED)),
+    ];
+    let block = pane_block(title, MUTED);
+    if calls.is_empty() {
+        let text = Line::from("No call yet.").fg(MUTED);
+        frame.render_widget(Paragraph::new(text).block(block), area);
+        return;
+    }
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let skip = calls.len().saturating_sub(inner_height);
+    let lines: Vec<Line> = calls[skip..]
+        .iter()
+        .map(|call| {
+            let (outcome, color) = match &call.outcome {
+                Ok(status) if (200..300).contains(status) => (status.to_string(), Color::Green),
+                Ok(status) => (status.to_string(), Color::Red),
+                Err(err) => (err.clone(), Color::Red),
+            };
+            let duration = format!("{}ms", call.duration.as_millis());
+            Line::from(vec![
+                Span::styled(format!("{}  ", call.at.format("%H:%M:%S")), Style::new().fg(MUTED)),
+                Span::raw(format!("{:<4}  ", call.method)),
+                Span::styled(format!("{outcome:<3}  "), Style::new().fg(color)),
+                Span::styled(format!("{duration:>6}  "), Style::new().fg(MUTED)),
+                Span::raw(call.url.clone()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 const SORT_KEYS: [(&str, &str); 3] = [
     ("h/l", "choose column"),
     ("Enter", "sort (again: reverse)"),
     ("Esc", "cancel"),
 ];
 
-const KEYS: [(&str, &str); 9] = [
+const KEYS: [(&str, &str); 10] = [
     ("Tab", "switch"),
     ("j/k", "move"),
     ("Enter", "open"),
@@ -309,6 +352,7 @@ const KEYS: [(&str, &str); 9] = [
     ("v", "review"),
     ("a", "attach"),
     ("x", "close"),
+    ("l", "calls"),
     ("q", "quit"),
 ];
 
@@ -532,6 +576,34 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(draw(&mut app).contains("STATUS v"));
+    }
+
+    #[test]
+    fn api_calls_pane_is_hidden_until_toggled() {
+        use std::time::Duration;
+        use usine::api_log::ApiCall;
+
+        let mut app = App::new(false, false, "config.toml".into());
+        let call = |url: &str, outcome| ApiCall {
+            at: chrono::Local::now(),
+            method: "GET".into(),
+            url: url.into(),
+            outcome,
+            duration: Duration::from_millis(42),
+        };
+        app.api_log.record(call("https://gitlab.com/api/v4/user", Ok(200)));
+        app.api_log.record(call("https://gitlab.com/api/v4/merge_requests", Ok(401)));
+        app.api_log.record(call("https://example.atlassian.net/rest", Err("timed out".into())));
+        assert!(!draw(&mut app).contains("API calls"));
+
+        app.on_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        let buffer = draw_buffer(&mut app);
+        let screen = draw(&mut app);
+        assert!(screen.contains("API calls (3)  l: hide"), "{screen}");
+        assert!(screen.contains("GET   200    42ms  https://gitlab.com/api/v4/user"), "{screen}");
+        assert_eq!(style_of(&buffer, "200").fg, Some(Color::Green));
+        assert_eq!(style_of(&buffer, "401").fg, Some(Color::Red));
+        assert_eq!(style_of(&buffer, "timed out").fg, Some(Color::Red));
     }
 
     #[test]

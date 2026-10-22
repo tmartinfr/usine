@@ -5,6 +5,7 @@ use std::cmp::Ordering;
 use chrono::{DateTime, Local};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
+use usine::api_log::ApiLog;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest};
 
@@ -195,6 +196,9 @@ pub struct App {
     pub sorting: Option<usize>,
     /// `q` was pressed, waiting for confirmation.
     pub confirm_quit: bool,
+    /// Calls made by the connectors, shown in the API calls pane.
+    pub api_log: ApiLog,
+    pub show_calls: bool,
 }
 
 impl App {
@@ -211,6 +215,8 @@ impl App {
             preview: None,
             sorting: None,
             confirm_quit: false,
+            api_log: ApiLog::default(),
+            show_calls: false,
         }
     }
 
@@ -294,6 +300,7 @@ impl App {
                 return Action::Quit;
             }
             KeyCode::Char('r') => return Action::Refresh,
+            KeyCode::Char('l') => self.show_calls = !self.show_calls,
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = match self.focus {
                     Focus::Jira => Focus::Gitlab,
@@ -686,6 +693,16 @@ pub mod tests {
         let keys: Vec<&str> = app.jira.items().iter().map(|i| i.key.as_str()).collect();
         assert_eq!(keys, ["PAY-3", "PAY-2", "PAY-1"]);
         assert_eq!(app.jira.selected().map(|i| i.key.as_str()), Some("PAY-2"));
+    }
+
+    #[test]
+    fn l_toggles_the_api_calls_pane() {
+        let mut app = loaded_app();
+        assert!(!app.show_calls);
+        assert_eq!(app.on_key(key(KeyCode::Char('l'))), Action::None);
+        assert!(app.show_calls);
+        app.on_key(key(KeyCode::Char('l')));
+        assert!(!app.show_calls);
     }
 
     #[test]

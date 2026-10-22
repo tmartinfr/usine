@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use tokio::task::JoinSet;
 
 use super::GitlabConfig;
+use crate::api_log::ApiLog;
 use super::api::{ErrorResponse, RawMergeRequest, RawMergeRequestDetail, RawUser};
 use crate::model::{MergeRequest, Role};
 
@@ -13,6 +14,7 @@ pub struct GitlabClient {
     http: reqwest::Client,
     base_url: String,
     token: String,
+    log: ApiLog,
 }
 
 impl GitlabClient {
@@ -25,7 +27,14 @@ impl GitlabClient {
             http,
             base_url: config.url.trim_end_matches('/').to_string(),
             token: config.token.clone(),
+            log: ApiLog::default(),
         })
+    }
+
+    /// Records every call in `log`.
+    pub fn with_log(mut self, log: ApiLog) -> Self {
+        self.log = log;
+        self
     }
 
     /// Returns at most `limit` open MRs authored by the token owner, most recently updated first.
@@ -149,12 +158,10 @@ impl GitlabClient {
 
     /// Sends an authenticated GET; non-2xx responses become errors with GitLab's message.
     async fn get(&self, url: &str, query: &[(&str, &str)], what: &str) -> Result<reqwest::Response> {
+        let request = self.http.get(url).header("PRIVATE-TOKEN", &self.token).query(query);
         let response = self
-            .http
-            .get(url)
-            .header("PRIVATE-TOKEN", &self.token)
-            .query(query)
-            .send()
+            .log
+            .send(request)
             .await
             .with_context(|| format!("request to {url} failed"))?;
 
