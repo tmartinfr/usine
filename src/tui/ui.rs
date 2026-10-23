@@ -39,15 +39,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         None => Constraint::Length(3),
     };
     let calls_height = if app.show_calls { Constraint::Fill(1) } else { Constraint::Length(0) };
+    let notifications_height =
+        if app.show_notifications { Constraint::Fill(1) } else { Constraint::Length(0) };
     // The split and tree views use the height of both stacked panes.
     let middle_height = match app.view {
         View::Stacked => Constraint::Fill(1),
         View::Split | View::Tree => Constraint::Length(0),
     };
-    let [top, middle, bottom, calls, footer] = Layout::vertical([
+    let [top, middle, bottom, notifications, calls, footer] = Layout::vertical([
         Constraint::Fill(1),
         middle_height,
         review_height,
+        notifications_height,
         calls_height,
         Constraint::Length(1),
     ])
@@ -59,6 +62,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Tree => render_tree(frame, top, app),
     }
     render_review(frame, bottom, app);
+    if app.show_notifications {
+        render_notifications(frame, notifications, app);
+    }
     if app.show_calls {
         render_calls(frame, calls, app);
     }
@@ -568,13 +574,41 @@ fn render_calls(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// Changes notified so far, latest at the bottom.
+fn render_notifications(frame: &mut Frame, area: Rect, app: &App) {
+    let title = vec![
+        Span::styled(" Notifications ", Style::new().bold()),
+        Span::styled(format!("({}) ", app.notified.len()), Style::new().fg(MUTED)),
+        Span::styled(" n", Style::new().fg(ACCENT).bold()),
+        Span::styled(": hide ", Style::new().fg(MUTED)),
+    ];
+    let block = pane_block(title, MUTED);
+    if app.notified.is_empty() {
+        let text = Line::from("No notification yet.").fg(MUTED);
+        frame.render_widget(Paragraph::new(text).block(block), area);
+        return;
+    }
+    let inner_height = area.height.saturating_sub(2) as usize;
+    let skip = app.notified.len().saturating_sub(inner_height);
+    let lines: Vec<Line> = app.notified[skip..]
+        .iter()
+        .map(|(at, text)| {
+            Line::from(vec![
+                Span::styled(format!("{}  ", at.format("%H:%M:%S")), Style::new().fg(MUTED)),
+                Span::raw(text.clone()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
 const SORT_KEYS: [(&str, &str); 3] = [
     ("h/l", "choose column"),
     ("Enter", "sort (again: reverse)"),
     ("Esc", "cancel"),
 ];
 
-const KEYS: [(&str, &str); 11] = [
+const KEYS: [(&str, &str); 12] = [
     ("Tab", "switch"),
     ("j/k", "move"),
     ("Enter", "open"),
@@ -584,6 +618,7 @@ const KEYS: [(&str, &str); 11] = [
     ("a", "attach"),
     ("x", "close"),
     ("w", "view"),
+    ("n", "notifs"),
     ("l", "calls"),
     ("q", "quit"),
 ];
@@ -914,6 +949,23 @@ mod tests {
         assert_eq!(style_of(&buffer, "200").fg, Some(Color::Green));
         assert_eq!(style_of(&buffer, "401").fg, Some(Color::Red));
         assert_eq!(style_of(&buffer, "timed out").fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn notifications_pane_is_hidden_until_toggled() {
+        let mut app = App::new(false, false, "config.toml".into());
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(draw(&mut app).contains("No notification yet."));
+
+        let at = chrono::Local::now();
+        app.notified.push((at, "PAY-1: To Do -> In Progress".into()));
+        let screen = draw(&mut app);
+        assert!(screen.contains("Notifications (1)  n: hide"), "{screen}");
+        let line = format!("{}  PAY-1: To Do -> In Progress", at.format("%H:%M:%S"));
+        assert!(screen.contains(&line), "{screen}");
+
+        app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(!draw(&mut app).contains("Notifications"));
     }
 
     #[test]

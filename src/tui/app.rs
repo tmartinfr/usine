@@ -8,12 +8,16 @@ use ratatui::widgets::TableState;
 use usine::api_log::ApiLog;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest};
+use usine::workflows::changes::{finished_reviews, issue_changes, mr_changes};
 use usine::workflows::links::link;
 
 use super::sort::{
     ISSUE_COLUMNS, ISSUE_DEFAULT_SORT, MR_COLUMNS, MR_DEFAULT_SORT, ReviewState, Sort,
     compare_issues, compare_merge_requests,
 };
+
+/// Number of notifications kept in the Notifications pane.
+const NOTIFICATIONS_KEPT: usize = 500;
 
 /// Something a pane can list and open in a browser.
 pub trait Item {
@@ -247,6 +251,11 @@ pub struct App {
     /// Selected row and scroll of the tree view, whose table has more rows
     /// than `linked_rows`: the names of the MR columns.
     pub tree_table: TableState,
+    /// Changes seen since the last refresh, to send as desktop notifications.
+    pub notifications: Vec<String>,
+    /// Changes already seen, oldest first, shown in the Notifications pane.
+    pub notified: Vec<(DateTime<Local>, String)>,
+    pub show_notifications: bool,
 }
 
 impl App {
@@ -269,6 +278,9 @@ impl App {
             linked_rows: Vec::new(),
             linked_table: TableState::default(),
             tree_table: TableState::default(),
+            notifications: Vec::new(),
+            notified: Vec::new(),
+            show_notifications: false,
         }
     }
 
@@ -313,18 +325,30 @@ impl App {
         let selection = self.linked_selection();
         match msg {
             Msg::Jira(result) => {
+                if let (Content::Loaded(old), Ok(new)) = (&self.jira.content, &result) {
+                    let changes = issue_changes(old, new);
+                    self.notify(changes);
+                }
                 if result.is_ok() {
                     self.last_update = Some(Local::now());
                 }
                 self.jira.set_result(result);
             }
             Msg::Gitlab(result) => {
+                if let (Content::Loaded(old), Ok(new)) = (&self.gitlab.content, &result) {
+                    let changes = mr_changes(old, new);
+                    self.notify(changes);
+                }
                 if result.is_ok() {
                     self.last_update = Some(Local::now());
                 }
                 self.gitlab.set_result(result);
             }
-            Msg::Reviews(reviews) => self.reviews = reviews,
+            Msg::Reviews(reviews) => {
+                let changes = finished_reviews(&self.reviews, &reviews);
+                self.notify(changes);
+                self.reviews = reviews;
+            }
             Msg::Preview { session, text } => self.preview = Some((session, text)),
             Msg::ReviewStarted { mr, result } => {
                 self.starting.retain(|r| *r != mr);
@@ -346,6 +370,14 @@ impl App {
         // New items, or review states for the R column.
         self.sort_panes();
         self.relink(selection);
+    }
+
+    fn notify(&mut self, changes: Vec<String>) {
+        let now = Local::now();
+        self.notified.extend(changes.iter().map(|c| (now, c.clone())));
+        let excess = self.notified.len().saturating_sub(NOTIFICATIONS_KEPT);
+        self.notified.drain(..excess);
+        self.notifications.extend(changes);
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
@@ -370,6 +402,7 @@ impl App {
             }
             KeyCode::Char('r') => return Action::Refresh,
             KeyCode::Char('l') => self.show_calls = !self.show_calls,
+            KeyCode::Char('n') => self.show_notifications = !self.show_notifications,
             KeyCode::Char('w') => {
                 let selection = self.linked_selection();
                 (self.view, self.focus) = match (self.view, self.focus) {
@@ -1101,6 +1134,32 @@ pub mod tests {
         app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1")])));
         assert_eq!(app.linked_rows.len(), 4);
         assert_eq!(app.linked_table.selected(), Some(3));
+    }
+
+    #[test]
+    fn changes_are_notified_after_the_first_load() {
+        let mut app = loaded_app();
+        app.on_msg(Msg::Reviews(vec![session(1, false)]));
+        assert!(app.notifications.is_empty());
+
+        app.on_msg(Msg::Jira(Err("timeout".into())));
+        app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1")])));
+        app.on_msg(Msg::Gitlab(Ok(vec![mr(1)])));
+        app.on_msg(Msg::Reviews(vec![session(1, true)]));
+
+        // Jira failed in between: nothing to compare with.
+        let expected = ["group/project!2 is no longer listed", "Review of group/project!1 finished"];
+        assert_eq!(app.notifications, expected);
+        let notified: Vec<&str> = app.notified.iter().map(|(_, text)| text.as_str()).collect();
+        assert_eq!(notified, expected);
+
+        app.notifications.clear();
+        for _ in 0..NOTIFICATIONS_KEPT {
+            app.on_msg(Msg::Reviews(vec![session(1, false)]));
+            app.on_msg(Msg::Reviews(vec![session(1, true)]));
+        }
+        assert_eq!(app.notified.len(), NOTIFICATIONS_KEPT);
+        assert_eq!(app.notified[0].1, "Review of group/project!1 finished");
     }
 
     #[test]

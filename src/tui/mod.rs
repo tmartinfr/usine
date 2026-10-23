@@ -180,6 +180,11 @@ fn event_loop(
         while let Ok(msg) = rx.try_recv() {
             app.on_msg(msg);
         }
+        if !app.notifications.is_empty() {
+            // Best effort: no notification daemon must not break the UI.
+            let _ = notify(&app.notifications.join("\n"));
+            app.notifications.clear();
+        }
         if sources.gitlab.is_some() && last_poll.is_none_or(|t| t.elapsed() >= REVIEW_POLL) {
             last_poll = Some(Instant::now());
             sources.poll_reviews(app.selected_review().map(|s| s.name.clone()), tx);
@@ -248,8 +253,35 @@ fn attach(terminal: &mut DefaultTerminal, tmux: &Tmux, session: &str) -> Result<
 
 fn open_in_browser(url: &str) -> std::io::Result<()> {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    let mut child = Command::new(opener)
-        .arg(url)
+    spawn_quiet(Command::new(opener).arg(url))
+}
+
+/// Shows `body` as a desktop notification.
+fn notify(body: &str) -> std::io::Result<()> {
+    let mut command = if cfg!(target_os = "macos") {
+        // Passed as an argument, not interpolated, so quotes in titles are safe.
+        let mut command = Command::new("osascript");
+        command.args([
+            "-e",
+            "on run argv",
+            "-e",
+            "display notification (item 1 of argv) with title \"usine\"",
+            "-e",
+            "end run",
+            body,
+        ]);
+        command
+    } else {
+        let mut command = Command::new("notify-send");
+        command.args(["--app-name=usine", "usine", body]);
+        command
+    };
+    spawn_quiet(&mut command)
+}
+
+/// Runs `command` in the background, detached from the terminal.
+fn spawn_quiet(command: &mut Command) -> std::io::Result<()> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

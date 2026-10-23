@@ -69,6 +69,7 @@ The screen shows three panes, one above the other:
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
 - **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
 - **Review**: the live screen of the Claude review of the selected merge request.
+- **Notifications** (hidden by default, press `n` to show or hide it): the changes usine notified (see [Notifications](#notifications)), latest at the bottom, with their time. The last 500 are kept.
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
 
 Up to 100 items are shown per pane. Data is loaded in the background when the interface starts, then refreshed automatically every 5 minutes. A pane whose connector is not configured shows which config section is missing; a pane whose source fails shows the error, while the other pane keeps working.
@@ -87,7 +88,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 + Review group/backend/api!42 [running]  a: attach ---------------------------+
 | * Reading the diff of group/backend/api!42...                               |
 +-----------------------------------------------------------------------------+
- Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  w: view  l: calls  q: quit
+ Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  w: view  n: notifs  l: calls  q: quit
 ```
 
 | Key                     | Action                                              |
@@ -105,6 +106,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `x`                     | Close a finished review (merge request panes)       |
 | `X`                     | Close a review even if Claude is still running (merge request panes) |
 | `w`                     | Switch to the next view: stacked, split, tree (see below) |
+| `n`                     | Show or hide the Notifications pane                 |
 | `l`                     | Show or hide the API calls pane                     |
 | `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
 | `Ctrl-C`                | Quit immediately                                    |
@@ -186,6 +188,18 @@ Colors help scanning the panes:
 - Dates of the last 24 hours are highlighted, older ones are greyed out.
 - The Review pane keeps the colors of the Claude session.
 - Messages at the bottom are green (done), yellow (nothing done, e.g. a review already exists) or red (error).
+
+#### Notifications
+
+While the terminal interface runs, usine sends a desktop notification when, at a refresh:
+
+- a Jira issue appears in the list, changes status, or is no longer listed;
+- a merge request you review appears in the list;
+- the merge status of a merge request changes (`unchecked` and `checking` are ignored), or the pipeline of one of your merge requests changes;
+- a merge request is no longer listed (merged, closed, or approved by you);
+- a Claude review finishes.
+
+Changes seen together are grouped in one notification; each change is also listed in the Notifications pane (`n`). Nothing is sent for the first load, nor for a pane whose previous refresh failed. Notifications use `notify-send` on Linux and `osascript` on macOS; when they are not available, nothing is sent.
 
 The title of a pane shows `(refreshing)` while new data is being loaded, and the bottom line shows the time of the last successful update. Messages (e.g. why a review could not start) replace the key help until the next key press.
 
