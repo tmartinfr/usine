@@ -133,6 +133,9 @@ pub enum View {
     Stacked,
     /// Jira issues next to their MRs, then the MRs of no listed issue.
     Split,
+    /// Jira issues with their MRs indented below them, in one pane, then the
+    /// MRs of no listed issue.
+    Tree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,13 +145,17 @@ pub enum Focus {
     LinkedMrs,
     /// MRs pane (stacked view only).
     Gitlab,
+    /// Issues and their MRs (tree view only).
+    Tree,
 }
 
-/// A row of the split view: indexes of an issue and of an MR in the items of their pane.
-pub type SplitRow = (Option<usize>, Option<usize>);
+/// A row of the split or tree view: indexes of an issue and of an MR in the
+/// items of their pane. In the tree view, `(Some(issue), None)` is an issue
+/// row and `(None, None)` the row above the MRs of no listed issue.
+pub type LinkedRow = (Option<usize>, Option<usize>);
 
-/// URLs of the issue and MR of the selected row of the split view.
-type SplitSelection = Option<(Option<String>, Option<String>)>;
+/// URLs of the issue and MR of the selected row of the split or tree view.
+type LinkedSelection = Option<(Option<String>, Option<String>)>;
 
 /// Review state of `mr`, given the review sessions and the reviews being set up.
 pub fn review_state(reviews: &[Session], starting: &[String], mr: &MergeRequest) -> ReviewState {
@@ -233,10 +240,13 @@ pub struct App {
     pub api_log: ApiLog,
     pub show_calls: bool,
     pub view: View,
-    /// Split view rows: the issues with their MRs, then the MRs of no listed issue.
-    pub split_rows: Vec<SplitRow>,
-    /// Selected row of `split_rows`, shared by the issues and the MRs.
-    pub split_table: TableState,
+    /// Split or tree view rows: the issues with their MRs, then the MRs of no listed issue.
+    pub linked_rows: Vec<LinkedRow>,
+    /// Selected row of `linked_rows`, shared by the issues and the MRs.
+    pub linked_table: TableState,
+    /// Selected row and scroll of the tree view, whose table has more rows
+    /// than `linked_rows`: the names of the MR columns.
+    pub tree_table: TableState,
 }
 
 impl App {
@@ -256,8 +266,9 @@ impl App {
             api_log: ApiLog::default(),
             show_calls: false,
             view: View::Stacked,
-            split_rows: Vec::new(),
-            split_table: TableState::default(),
+            linked_rows: Vec::new(),
+            linked_table: TableState::default(),
+            tree_table: TableState::default(),
         }
     }
 
@@ -270,9 +281,9 @@ impl App {
         self.reviews.iter().find(|s| s.subject == mr_reference)
     }
 
-    /// Issue and MR of the selected row of the split view.
+    /// Issue and MR of the selected row of the split or tree view.
     pub fn selected_link(&self) -> Option<(Option<&Issue>, Option<&MergeRequest>)> {
-        let (issue, mr) = *self.split_rows.get(self.split_table.selected()?)?;
+        let (issue, mr) = *self.linked_rows.get(self.linked_table.selected()?)?;
         let issue = issue.and_then(|i| self.jira.items().get(i));
         Some((issue, mr.and_then(|m| self.gitlab.items().get(m))))
     }
@@ -281,7 +292,7 @@ impl App {
     pub fn selected_mr(&self) -> Option<&MergeRequest> {
         match self.view {
             View::Stacked => self.gitlab.selected(),
-            View::Split => self.selected_link()?.1,
+            View::Split | View::Tree => self.selected_link()?.1,
         }
     }
 
@@ -299,7 +310,7 @@ impl App {
     }
 
     pub fn on_msg(&mut self, msg: Msg) {
-        let selection = self.split_selection();
+        let selection = self.linked_selection();
         match msg {
             Msg::Jira(result) => {
                 if result.is_ok() {
@@ -360,12 +371,15 @@ impl App {
             KeyCode::Char('r') => return Action::Refresh,
             KeyCode::Char('l') => self.show_calls = !self.show_calls,
             KeyCode::Char('w') => {
+                let selection = self.linked_selection();
                 (self.view, self.focus) = match (self.view, self.focus) {
                     (View::Stacked, Focus::Gitlab) => (View::Split, Focus::LinkedMrs),
                     (View::Stacked, focus) => (View::Split, focus),
-                    (View::Split, Focus::LinkedMrs) => (View::Stacked, Focus::Gitlab),
-                    (View::Split, focus) => (View::Stacked, focus),
+                    (View::Split, _) => (View::Tree, Focus::Tree),
+                    (View::Tree, _) => (View::Stacked, Focus::Jira),
                 };
+                // The split and tree views have different rows.
+                self.relink(selection);
             }
             KeyCode::Tab => self.cycle_focus(true),
             KeyCode::BackTab => self.cycle_focus(false),
@@ -375,6 +389,10 @@ impl App {
                     (View::Split, Focus::Jira) => {
                         self.selected_link().and_then(|(issue, _)| issue).map(Item::url)
                     }
+                    // The MR of an MR row, the issue of an issue row.
+                    (View::Tree, _) => self.selected_link().and_then(|(issue, mr)| {
+                        mr.map(Item::url).or(issue.map(Item::url))
+                    }),
                     _ => self.selected_mr().map(Item::url),
                 };
                 let url = url.map(str::to_string);
@@ -443,7 +461,7 @@ impl App {
     /// order when the pane is already sorted on it.
     fn on_sort_key(&mut self, key: KeyEvent, column: usize) -> Action {
         let last = match self.focus {
-            Focus::Jira => ISSUE_COLUMNS.len() - 1,
+            Focus::Jira | Focus::Tree => ISSUE_COLUMNS.len() - 1,
             _ => MR_COLUMNS.len() - 1,
         };
         match key.code {
@@ -454,7 +472,7 @@ impl App {
             KeyCode::Char('l') | KeyCode::Right => self.sorting = Some((column + 1).min(last)),
             KeyCode::Enter => {
                 let sort = match self.focus {
-                    Focus::Jira => &mut self.jira.sort,
+                    Focus::Jira | Focus::Tree => &mut self.jira.sort,
                     _ => &mut self.gitlab.sort,
                 };
                 let descending = matches!(sort, Some(s) if s.column == column && !s.descending);
@@ -470,7 +488,7 @@ impl App {
 
     pub fn focused_sort(&self) -> Option<Sort> {
         match self.focus {
-            Focus::Jira => self.jira.sort,
+            Focus::Jira | Focus::Tree => self.jira.sort,
             _ => self.gitlab.sort,
         }
     }
@@ -479,15 +497,16 @@ impl App {
         let order: &[Focus] = match self.view {
             View::Stacked => &[Focus::Jira, Focus::Gitlab],
             View::Split => &[Focus::Jira, Focus::LinkedMrs],
+            View::Tree => &[Focus::Tree],
         };
         let len = order.len();
         let current = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         self.focus = order[if forward { (current + 1) % len } else { (current + len - 1) % len }];
     }
 
-    /// Sorts the panes, keeping the selection of the split view.
+    /// Sorts the panes, keeping the selection of the split or tree view.
     fn resort(&mut self) {
-        let selection = self.split_selection();
+        let selection = self.linked_selection();
         self.sort_panes();
         self.relink(selection);
     }
@@ -500,34 +519,56 @@ impl App {
         });
     }
 
-    fn split_selection(&self) -> SplitSelection {
+    fn linked_selection(&self) -> LinkedSelection {
         let (issue, mr) = self.selected_link()?;
         Some((issue.map(|i| i.url.clone()), mr.map(|m| m.url.clone())))
     }
 
-    /// Recomputes the split view rows from the panes, keeping `selection`
-    /// selected when it is still listed.
-    fn relink(&mut self, selection: SplitSelection) {
+    /// Recomputes the split or tree view rows from the panes, keeping
+    /// `selection` selected when it is still listed, or else its issue.
+    fn relink(&mut self, selection: LinkedSelection) {
         let (issues, mrs) = (self.jira.items(), self.gitlab.items());
         let links = link(issues, mrs);
-        let others = links.others.into_iter().map(|m| (None, Some(m)));
-        self.split_rows = links.rows.into_iter().map(|(i, m)| (Some(i), m)).chain(others).collect();
+        self.linked_rows = match self.view {
+            View::Tree => {
+                let mut rows = Vec::new();
+                for (n, &(i, m)) in links.rows.iter().enumerate() {
+                    // Each issue row is followed by its MR rows.
+                    if n == 0 || links.rows[n - 1].0 != i {
+                        rows.push((Some(i), None));
+                    }
+                    if m.is_some() {
+                        rows.push((Some(i), m));
+                    }
+                }
+                if !links.others.is_empty() {
+                    rows.push((None, None));
+                }
+                rows.extend(links.others.into_iter().map(|m| (None, Some(m))));
+                rows
+            }
+            _ => {
+                let others = links.others.into_iter().map(|m| (None, Some(m)));
+                links.rows.into_iter().map(|(i, m)| (Some(i), m)).chain(others).collect()
+            }
+        };
         let issue_url = |i: Option<usize>| i.map(|i| issues[i].url.as_str());
         let mr_url = |m: Option<usize>| m.map(|m| mrs[m].url.as_str());
+        let rows = &self.linked_rows;
         let found = selection.and_then(|(issue, mr)| {
-            self.split_rows
-                .iter()
+            rows.iter()
                 .position(|&(i, m)| issue_url(i) == issue.as_deref() && mr_url(m) == mr.as_deref())
+                .or_else(|| rows.iter().position(|&(i, _)| issue_url(i) == issue.as_deref()))
         });
-        select_or_clamp(&mut self.split_table, found, self.split_rows.len());
+        select_or_clamp(&mut self.linked_table, found, self.linked_rows.len());
     }
 
     fn select(&mut self, target: impl FnOnce(usize, usize) -> isize) {
         match (self.view, self.focus) {
             (View::Stacked, Focus::Jira) => self.jira.select(target),
             (View::Stacked, _) => self.gitlab.select(target),
-            (View::Split, _) => {
-                move_selection(&mut self.split_table, self.split_rows.len(), target)
+            (View::Split | View::Tree, _) => {
+                move_selection(&mut self.linked_table, self.linked_rows.len(), target)
             }
         }
     }
@@ -898,7 +939,7 @@ pub mod tests {
         assert_eq!(app.view, View::Split);
         // The MR of no listed issue comes last.
         assert_eq!(
-            app.split_rows,
+            app.linked_rows,
             [(Some(0), Some(0)), (Some(0), Some(2)), (Some(1), None), (Some(2), Some(3)), (None, Some(1))]
         );
 
@@ -909,18 +950,106 @@ pub mod tests {
         app.on_key(key(KeyCode::BackTab));
         assert_eq!(app.focus, Focus::LinkedMrs);
 
-        // Each view has its own MRs pane.
+        // w cycles the split, tree and stacked views; each has its own MRs pane.
+        let w = |app: &mut App| {
+            app.on_key(key(KeyCode::Char('w')));
+            (app.view, app.focus)
+        };
+        assert_eq!(w(&mut app), (View::Tree, Focus::Tree));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Tree);
+        assert_eq!(w(&mut app), (View::Stacked, Focus::Jira));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(w(&mut app), (View::Split, Focus::LinkedMrs));
+    }
+
+    /// Tree view of the split view fixture.
+    pub fn tree_app() -> App {
+        let mut app = split_app();
+        app.on_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        app
+    }
+
+    #[test]
+    fn tree_rows_have_the_issues_then_their_mrs() {
+        let app = tree_app();
+        assert_eq!(app.view, View::Tree);
+        // The MR of no listed issue comes last, below a row of its own.
+        assert_eq!(
+            app.linked_rows,
+            [
+                (Some(0), None),
+                (Some(0), Some(0)),
+                (Some(0), Some(2)),
+                (Some(1), None),
+                (Some(2), None),
+                (Some(2), Some(3)),
+                (None, None),
+                (None, Some(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn tree_rows_open_and_review_their_issue_or_mr() {
+        let mut app = tree_app();
+        // The selected MR of the split view stays selected.
+        assert_eq!(app.linked_table.selected(), Some(1));
+        app.on_key(key(KeyCode::Char('g')));
+        let open = |app: &mut App| app.on_key(key(KeyCode::Enter));
+        assert_eq!(open(&mut app), Action::Open(issue("PAY-1").url));
+        assert_eq!(app.selected_mr(), None);
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(open(&mut app), Action::Open(mr(1).url));
+        let action = app.on_key(key(KeyCode::Char('v')));
+        assert_eq!(action, Action::StartReview(Box::new(linked_mr(1, "PAY-1"))));
+
+        // The row above the MRs of no listed issue opens nothing.
+        app.on_key(key(KeyCode::Char('G')));
+        app.on_key(key(KeyCode::Char('k')));
+        assert_eq!(open(&mut app), Action::None);
+        assert_eq!(app.selected_mr(), None);
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(open(&mut app), Action::Open(mr(2).url));
+    }
+
+    #[test]
+    fn s_sorts_the_issues_of_the_tree() {
+        let mut app = tree_app();
+        app.on_key(key(KeyCode::Char('s')));
+        assert_eq!(app.sorting, Some(ISSUE_DEFAULT_SORT.column));
+        app.on_key(key(KeyCode::Char('h')));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.jira.sort, Some(Sort { column: 0, descending: false }));
+        assert_eq!(app.gitlab.sort, Some(MR_DEFAULT_SORT));
+    }
+
+    #[test]
+    fn selection_is_kept_across_split_and_tree_views() {
+        let mut app = split_app();
+        // PAY-3 and its MR.
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Char('j')));
+        }
         app.on_key(key(KeyCode::Char('w')));
-        assert_eq!((app.view, app.focus), (View::Stacked, Focus::Gitlab));
-        app.on_key(key(KeyCode::Char('w')));
-        assert_eq!((app.view, app.focus), (View::Split, Focus::LinkedMrs));
+        assert_eq!(app.linked_table.selected(), Some(5));
+
+        // The PAY-1 row of the tree selects the first row of PAY-1 in the split view.
+        app.on_key(key(KeyCode::Char('g')));
+        for _ in 0..2 {
+            app.on_key(key(KeyCode::Char('w')));
+        }
+        assert_eq!(app.view, View::Split);
+        assert_eq!(app.linked_table.selected(), Some(0));
     }
 
     #[test]
     fn split_rows_are_shared_and_enter_opens_the_focused_side() {
         let mut app = split_app();
         app.on_key(key(KeyCode::Char('j')));
-        assert_eq!(app.split_table.selected(), Some(1));
+        assert_eq!(app.linked_table.selected(), Some(1));
         let open = |app: &mut App| app.on_key(key(KeyCode::Enter));
         assert_eq!(open(&mut app), Action::Open(issue("PAY-1").url));
 
@@ -965,13 +1094,13 @@ pub mod tests {
 
         let issues = vec![issue("PAY-9"), issue("PAY-1"), issue("PAY-2"), issue("PAY-3")];
         app.on_msg(Msg::Jira(Ok(issues)));
-        assert_eq!(app.split_table.selected(), Some(4));
+        assert_eq!(app.linked_table.selected(), Some(4));
         assert_eq!(selected_key(&app).as_deref(), Some("PAY-3"));
 
         // PAY-3 is gone: its MR joins the MRs of no listed issue.
         app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1")])));
-        assert_eq!(app.split_rows.len(), 4);
-        assert_eq!(app.split_table.selected(), Some(3));
+        assert_eq!(app.linked_rows.len(), 4);
+        assert_eq!(app.linked_table.selected(), Some(3));
     }
 
     #[test]

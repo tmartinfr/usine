@@ -20,12 +20,18 @@ const ACCENT: Color = Color::Cyan;
 /// Color of the Claude review pane.
 const CLAUDE: Color = Color::Magenta;
 const MUTED: Color = Color::DarkGray;
+/// Color of the names of the MR columns in the tree view: orange, used nowhere else.
+const MR_HEADER: Color = Color::Indexed(208);
 
 /// A table cell: text and style.
 type Styled = (String, Style);
 
 /// Columns of the MRs in the split view, as indexes into `MR_COLUMNS`.
 const SPLIT_MR_CELLS: [usize; 6] = [0, 1, 2, 3, 4, 6];
+/// Row of the tree view above the MRs of no listed issue.
+const OTHER_MRS: &str = "MRs of no listed issue";
+/// Width of the role of the MRs in the tree view, so that their titles line up.
+const TREE_ROLE_WIDTH: usize = 10;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let review_height = match app.selected_review() {
@@ -33,10 +39,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         None => Constraint::Length(3),
     };
     let calls_height = if app.show_calls { Constraint::Fill(1) } else { Constraint::Length(0) };
-    // The split view uses the height of both stacked panes.
+    // The split and tree views use the height of both stacked panes.
     let middle_height = match app.view {
         View::Stacked => Constraint::Fill(1),
-        View::Split => Constraint::Length(0),
+        View::Split | View::Tree => Constraint::Length(0),
     };
     let [top, middle, bottom, calls, footer] = Layout::vertical([
         Constraint::Fill(1),
@@ -50,6 +56,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.view {
         View::Stacked => render_stacked(frame, top, middle, app),
         View::Split => render_split(frame, top, app),
+        View::Tree => render_tree(frame, top, app),
     }
     render_review(frame, bottom, app);
     if app.show_calls {
@@ -97,9 +104,9 @@ fn render_split(frame: &mut Frame, area: Rect, app: &mut App) {
     let (issues, mrs) = (app.jira.items(), app.gitlab.items());
     let blank = |count: usize| vec![(String::new(), Style::new()); count];
     let (mut issue_rows, mut mr_rows) = (Vec::new(), Vec::new());
-    for (n, &(issue, mr)) in app.split_rows.iter().enumerate() {
+    for (n, &(issue, mr)) in app.linked_rows.iter().enumerate() {
         // An issue with several MRs is shown on its first row only.
-        let first = n == 0 || app.split_rows[n - 1].0 != issue;
+        let first = n == 0 || app.linked_rows[n - 1].0 != issue;
         issue_rows.push(match issue {
             Some(issue) if first => issue_row(&issues[issue]),
             _ => blank(ISSUE_COLUMNS.len()),
@@ -131,13 +138,14 @@ fn render_split(frame: &mut Frame, area: Rect, app: &mut App) {
             let header = header_labels(&ISSUE_COLUMNS, app.jira.sort);
             let choosing = app.sorting.filter(|_| focus == Focus::Jira);
             let style = highlight(Focus::Jira);
-            let table = &mut app.split_table;
-            render_table(frame, left, block, header, choosing, issue_rows, style, table);
+            let table = &mut app.linked_table;
+            let rows = issue_rows.into_iter().map(lines).collect();
+            render_table(frame, left, block, header, choosing, rows, style, table);
         }
     }
 
     // Same rows and selection as the issues: both sides scroll together.
-    let mut split_table = app.split_table;
+    let mut linked_table = app.linked_table;
     let focused = focus == Focus::LinkedMrs;
     let block = titled_block("GitLab MRs", gitlab_count, app.gitlab.loading, focused);
     let text = placeholder(&app.gitlab.content, "[gitlab]", &app.config_path);
@@ -146,9 +154,125 @@ fn render_split(frame: &mut Frame, area: Rect, app: &mut App) {
         None => {
             let header = SPLIT_MR_CELLS.iter().map(|&c| MR_COLUMNS[c].to_string()).collect();
             let style = highlight(Focus::LinkedMrs);
-            render_table(frame, right, block, header, None, mr_rows, style, &mut split_table);
+            let rows = mr_rows.into_iter().map(lines).collect();
+            render_table(frame, right, block, header, None, rows, style, &mut linked_table);
         }
     }
+}
+
+/// Issues with their MRs below them, then the MRs of no listed issue, in one
+/// pane. MRs fill the issue columns: reference, merge status, pipeline, update
+/// date, then role and title, under their own column names.
+fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
+    let (issues, mrs) = (app.jira.items(), app.gitlab.items());
+    let linked = &app.linked_rows;
+    let mr_header = tree_mr_header(app.gitlab.sort);
+    // Rows of the table: those of `linked`, each one above MRs followed by
+    // the names of their columns, which cannot be selected.
+    let mut rows = Vec::new();
+    let mut selected = None;
+    for (n, &(issue, mr)) in linked.iter().enumerate() {
+        if app.linked_table.selected() == Some(n) {
+            selected = Some(rows.len());
+        }
+        rows.push(match (issue, mr) {
+            (_, Some(mr)) => {
+                // The last MR below an issue closes its branch.
+                let last = linked.get(n + 1).is_none_or(|&(i, m)| i != issue || m.is_none());
+                tree_mr_row(&mrs[mr], last, &app.reviews, &app.starting)
+            }
+            (Some(issue), None) => lines(issue_row(&issues[issue])),
+            (None, None) => vec![Line::styled(OTHER_MRS, Style::new().fg(MUTED).bold())],
+        });
+        if mr.is_none() && linked.get(n + 1).is_some_and(|&(_, m)| m.is_some()) {
+            rows.push(mr_header.clone());
+        }
+    }
+
+    let jira_count = matches!(app.jira.content, Content::Loaded(_)).then_some(issues.len());
+    let gitlab_count = matches!(app.gitlab.content, Content::Loaded(_)).then_some(mrs.len());
+    let title_style = Style::new().fg(ACCENT).bold();
+    let mut title = title_spans("Jira issues", jira_count, app.jira.loading, title_style);
+    title.extend(title_spans("GitLab MRs", gitlab_count, app.gitlab.loading, title_style));
+    let block = pane_block(title, ACCENT);
+
+    // A source not loaded tells why above the rows of the other one.
+    let messages: Vec<Line> = [
+        placeholder(&app.jira.content, "[jira]", &app.config_path).filter(|_| jira_count.is_none()),
+        placeholder(&app.gitlab.content, "[gitlab]", &app.config_path)
+            .filter(|_| gitlab_count.is_none()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if rows.is_empty() {
+        let text = match messages.is_empty() {
+            true => vec![Line::from("Nothing to show.").fg(MUTED)],
+            false => messages,
+        };
+        frame.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }).block(block), area);
+        return;
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [top, rest] =
+        Layout::vertical([Constraint::Length(messages.len() as u16), Constraint::Fill(1)])
+            .areas(inner);
+    frame.render_widget(Paragraph::new(messages), top);
+    let header = header_labels(&ISSUE_COLUMNS, app.jira.sort);
+    let choosing = app.sorting.filter(|_| app.focus == Focus::Tree);
+    let highlight = Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    app.tree_table.select(selected);
+    let table = &mut app.tree_table;
+    render_table(frame, rest, Block::new(), header, choosing, rows, highlight, table);
+}
+
+/// Cells of an MR of the tree view, in the issue columns.
+fn tree_mr_row(
+    mr: &MergeRequest,
+    last: bool,
+    reviews: &[Session],
+    starting: &[String],
+) -> Vec<Line<'static>> {
+    let [marker, role, reference, status, pipeline, updated, title] =
+        merge_request_row(mr, reviews, starting).try_into().expect("a cell per MR column");
+    let span = |(text, style): Styled| Span::styled(text, style);
+    let branch = if last { "└─ " } else { "├─ " };
+    let role = (format!("{:<TREE_ROLE_WIDTH$}", role.0), role.1);
+    vec![
+        Line::from(vec![
+            Span::styled(branch, Style::new().fg(MUTED)),
+            span(marker),
+            Span::raw(" "),
+            span(reference),
+        ]),
+        Line::from(span(status)),
+        Line::from(span(pipeline)),
+        Line::from(span(updated)),
+        Line::from(vec![span(role), span(title)]),
+    ]
+}
+
+/// Names of the MR columns of the tree view, laid out as `tree_mr_row`, with
+/// the sort of the MRs.
+fn tree_mr_header(sort: Option<Sort>) -> Vec<Line<'static>> {
+    let [marker, role, reference, status, pipeline, updated, title] =
+        header_labels(&MR_COLUMNS, sort).try_into().expect("a label per MR column");
+    let label = |text: String| Span::styled(text, Style::new().fg(MR_HEADER).underlined());
+    // The padding of the role is not underlined.
+    let padding = " ".repeat(TREE_ROLE_WIDTH.saturating_sub(role.chars().count()));
+    vec![
+        Line::from(vec![Span::raw("   "), label(marker), Span::raw(" "), label(reference)]),
+        Line::from(label(status)),
+        Line::from(label(pipeline)),
+        Line::from(label(updated)),
+        Line::from(vec![label(role), Span::raw(padding), label(title)]),
+    ]
+}
+
+/// Table cells of `row`, one span each.
+fn lines(row: Vec<Styled>) -> Vec<Line<'static>> {
+    row.into_iter().map(|(text, style)| Line::styled(text, style)).collect()
 }
 
 struct PaneView<'a, T> {
@@ -253,14 +377,19 @@ fn titled_block(name: &str, count: Option<usize>, loading: bool, focused: bool) 
     } else {
         (MUTED, Style::new().bold())
     };
-    let mut title = vec![Span::styled(format!(" {name} "), title_style)];
+    pane_block(title_spans(name, count, loading, title_style), border)
+}
+
+/// `name (count)`, then `(refreshing)` while loading.
+fn title_spans(name: &str, count: Option<usize>, loading: bool, style: Style) -> Vec<Span<'static>> {
+    let mut title = vec![Span::styled(format!(" {name} "), style)];
     if let Some(count) = count {
         title.push(Span::styled(format!("({count}) "), Style::new().fg(MUTED)));
     }
     if loading {
         title.push(Span::styled("(refreshing) ", Style::new().fg(Color::Yellow)));
     }
-    pane_block(title, border)
+    title
 }
 
 /// What to show instead of the table when `content` has no item.
@@ -290,7 +419,7 @@ fn render_pane<T: Item>(frame: &mut Frame, area: Rect, view: PaneView<T>, pane: 
         render_message(frame, area, block, text);
         return;
     }
-    let rows = pane.items().iter().map(view.row).collect();
+    let rows = pane.items().iter().map(|item| lines((view.row)(item))).collect();
     let header = header_labels(view.header, pane.sort);
     let highlight = if view.focused {
         Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
@@ -308,14 +437,14 @@ fn render_table(
     block: Block,
     header: Vec<String>,
     choosing: Option<usize>,
-    rows: Vec<Vec<Styled>>,
+    rows: Vec<Vec<Line<'static>>>,
     highlight: Style,
     state: &mut TableState,
 ) {
     let mut widths: Vec<usize> = header.iter().map(|h| h.chars().count()).collect();
     for row in &rows {
-        for (width, (cell, _)) in widths.iter_mut().zip(row) {
-            *width = (*width).max(cell.chars().count());
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.width());
         }
     }
     // Every column fits its content, except the last one which takes the rest.
@@ -324,9 +453,7 @@ fn render_table(
         i if i == last => Constraint::Fill(1),
         _ => Constraint::Length(w as u16),
     });
-    let rows = rows.into_iter().map(|row| {
-        Row::new(row.into_iter().map(|(text, style)| Cell::from(text).style(style)))
-    });
+    let rows = rows.into_iter().map(Row::new);
     let header = Row::new(header.into_iter().enumerate().map(|(i, label)| {
         let cell = Cell::from(label);
         if choosing == Some(i) { cell.reversed() } else { cell }
@@ -502,7 +629,7 @@ mod tests {
 
     use super::*;
     use crate::tui::app::{Msg, Notice};
-    use crate::tui::app::tests::{issue, mr, session, split_app};
+    use crate::tui::app::tests::{issue, mr, session, split_app, tree_app};
 
     fn draw_buffer(app: &mut App) -> Buffer {
         let mut terminal = Terminal::new(TestBackend::new(130, 24)).unwrap();
@@ -711,6 +838,54 @@ mod tests {
         let mr_style = style_of(&buffer, "group/project!1");
         assert!(mr_style.add_modifier.contains(Modifier::BOLD));
         assert!(!mr_style.add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn tree_view_shows_mrs_below_their_issue_in_its_columns() {
+        let mut app = tree_app();
+        app.on_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        let screen = draw(&mut app);
+        let lines: Vec<&str> = screen.lines().collect();
+        let row = |text: &str| lines.iter().position(|l| l.contains(text)).unwrap();
+        // Column of `text` on the row of `anchor`, in characters.
+        let column = |anchor: &str, text: &str| {
+            let line = lines[row(anchor)];
+            line[..line.find(text).unwrap()].chars().count()
+        };
+
+        assert!(screen.contains("Jira issues (3)  GitLab MRs (4)"), "{screen}");
+        assert!(lines[row("KEY ")].contains("STATUS ^"), "{screen}");
+        // MRs follow their issue on branches; issues stay at the left edge.
+        assert!(lines[row("PAY-1 ")].starts_with("│PAY-1 "), "{screen}");
+        assert_eq!(row("group/project!1"), row("PAY-1 ") + 2, "{screen}");
+        assert!(lines[row("group/project!1")].starts_with("│├─   group/project!1"), "{screen}");
+        assert!(lines[row("group/project!3")].starts_with("│└─   group/project!3"), "{screen}");
+        // MR cells line up with the issue columns.
+        assert_eq!(column("group/project!1", "mergeable"), column("PAY-1 ", "To Do"), "{screen}");
+        assert_eq!(column("group/project!1", "author"), column("PAY-1 ", "Summary"), "{screen}");
+        // Each group of MRs has the names of their columns, issues without MR do not.
+        let headers: Vec<usize> = (0..lines.len()).filter(|&n| lines[n].contains("PIPELINE")).collect();
+        let expected = [row("PAY-1 "), row("PAY-3 "), row(OTHER_MRS)].map(|n| n + 1);
+        assert_eq!(headers, expected, "{screen}");
+        assert_eq!(column("PIPELINE", "STATUS"), column("group/project!1", "mergeable"), "{screen}");
+        assert_eq!(column("PIPELINE", "MR"), column("group/project!1", "group"), "{screen}");
+        assert_eq!(column("PIPELINE", "TITLE"), column("group/project!1", "MR 1"), "{screen}");
+        assert_eq!(row("group/project!4"), row("PAY-3 ") + 2, "{screen}");
+        // The MR of no listed issue comes last, below its own row.
+        assert_eq!(row("group/project!2"), row(OTHER_MRS) + 2, "{screen}");
+        assert!(row(OTHER_MRS) > row("group/project!4"), "{screen}");
+        assert!(!screen.contains("Review group"), "{screen}");
+
+        let buffer = draw_buffer(&mut app);
+        assert!(style_of(&buffer, "PAY-1").add_modifier.contains(Modifier::REVERSED));
+        assert!(!style_of(&buffer, "group/project!1").add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(style_of(&buffer, "PIPELINE").fg, Some(MR_HEADER));
+        // The names of the MR columns are skipped by the selection.
+        assert!(!style_of(&buffer, "PIPELINE").add_modifier.contains(Modifier::REVERSED));
+        app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        let buffer = draw_buffer(&mut app);
+        assert!(style_of(&buffer, "group/project!1").add_modifier.contains(Modifier::REVERSED));
+        assert!(!style_of(&buffer, "PIPELINE").add_modifier.contains(Modifier::REVERSED));
     }
 
     #[test]

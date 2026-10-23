@@ -104,14 +104,14 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `a`                     | Attach to the review of the selected merge request (merge request panes) |
 | `x`                     | Close a finished review (merge request panes)       |
 | `X`                     | Close a review even if Claude is still running (merge request panes) |
-| `w`                     | Switch between the stacked view and the split view (see below) |
+| `w`                     | Switch to the next view: stacked, split, tree (see below) |
 | `l`                     | Show or hide the API calls pane                     |
 | `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
 | `Ctrl-C`                | Quit immediately                                    |
 
 #### Split view
 
-Press `w` to show each Jira issue next to its merge requests, and `w` again to come back to the stacked view:
+Press `w` to show each Jira issue next to its merge requests, and `w` again to show the tree view:
 
 ```
 + Jira issues (3) -------------------------++ GitLab MRs (4) ---------------------------------------+
@@ -129,6 +129,33 @@ Press `w` to show each Jira issue next to its merge requests, and `w` again to c
 - Only the listed merge requests (yours and those you review) can be linked; this view makes no extra request.
 - `Tab` switches between the two sides; moving on either side moves both. `Enter` opens the issue on the left, the merge request on the right. `v`, `a` and `x` act on the merge request of the selected row, which the Review pane follows.
 - `s` sorts the issues (left). The merge requests follow their issue, in the order of the GitLab sort, which can be changed from the stacked view.
+
+#### Tree view
+
+From the split view, press `w` to show the issues and their merge requests in a single pane, each merge request on a branch below its issue, and `w` again to come back to the stacked view:
+
+```
++ Jira issues (3)  GitLab MRs (4) -----------------------------------------------------------------+
+|KEY                        STATUS ^      PRIORITY  UPDATED     SUMMARY                            |
+|PAY-123                    In Progress   High      2026-10-10  Fix the payment retry loop         |
+|   R MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                    |
+||- * group/backend/api!42  not_approved  running   2026-10-10  author    Add retry on payment ... |
+|`-   group/backend/api!45  mergeable     success   2026-10-09  author    Retry the refunds too    |
+|OPS-7                      To Do         -         2026-10-01  Rotate staging certificates        |
+|PAY-130                    Testing       Medium    2026-10-08  Drop unused fields                 |
+|   R MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                    |
+|`-   group/web!310         mergeable     success   2026-10-07  reviewer  Remove the old fields    |
+|MRs of no listed issue                                                                            |
+|   R MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                    |
+|`-   group/infra!7         draft_status  -         2026-10-02  author    Draft: bump the base ... |
++--------------------------------------------------------------------------------------------------+
+```
+
+- The merge requests share the issue columns: the merge request under `KEY`, its merge status under `STATUS`, its pipeline under `PRIORITY`, its last update under `UPDATED`, and its role then title under `SUMMARY`. Each group of merge requests starts with the names of their columns, showing the GitLab sort.
+- Merge requests are linked to issues as in the split view. A merge request mentioning several listed issues is shown below each of them.
+- The merge requests linked to none of the listed issues come last, below the `MRs of no listed issue` row.
+- `Enter` opens the issue or merge request of the selected row. `v`, `a` and `x` act on the selected merge request, which the Review pane follows.
+- `s` sorts the issues. The merge requests follow their issue, in the order of the GitLab sort, which can be changed from the stacked view.
 
 #### Sorting
 
