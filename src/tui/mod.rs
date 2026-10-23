@@ -140,7 +140,7 @@ fn merge_lists(
             mrs.push(mr);
         }
     }
-    mrs.sort_by(|a, b| b.updated.cmp(&a.updated));
+    mrs.sort_by_key(|m| std::cmp::Reverse(m.updated));
     mrs.truncate(limit);
     mrs
 }
