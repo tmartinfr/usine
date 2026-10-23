@@ -28,7 +28,7 @@ use usine::workflows::review;
 use app::{Action, App, Msg, Notice};
 
 const LIMIT: usize = 100;
-const AUTO_REFRESH: Duration = Duration::from_secs(5 * 60);
+const AUTO_REFRESH: Duration = Duration::from_secs(60);
 const REVIEW_POLL: Duration = Duration::from_secs(1);
 const TICK: Duration = Duration::from_millis(200);
 
