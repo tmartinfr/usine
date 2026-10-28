@@ -69,7 +69,7 @@ The screen shows three panes, one above the other:
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
 - **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
 - **Review**: the live screen of the Claude review of the selected merge request.
-- **Notifications** (hidden by default, press `n` to show or hide it): the changes usine notified (see [Notifications](#notifications)), latest at the bottom, with their time. The last 500 are kept.
+- **Notifications** (hidden by default, press `n` to show or hide it): the changes usine notified (see [Notifications](#notifications)), latest at the bottom, with their time. The last 500 are kept. Showing it moves the focus to it with the latest change selected; `Enter` opens the issue or merge request the change is about (for a finished review, its merge request when still listed).
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
 
 Up to 100 items are shown per pane. Data is loaded in the background when the interface starts, then refreshed automatically every minute. A pane whose connector is not configured shows which config section is missing; a pane whose source fails shows the error, while the other pane keeps working.
@@ -93,12 +93,12 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 
 | Key                     | Action                                              |
 |-------------------------|-----------------------------------------------------|
-| `Tab` / `Shift-Tab`     | Switch to the next / previous pane                  |
+| `Tab` / `Shift-Tab`     | Switch to the next / previous pane (including Notifications when shown) |
 | `j` / `Down`            | Next row                                            |
 | `k` / `Up`              | Previous row                                        |
 | `g` / `Home`            | First row                                           |
 | `G` / `End`             | Last row                                            |
-| `Enter`                 | Open the selected issue or merge request in your browser |
+| `Enter`                 | Open the selected issue or merge request in your browser (in Notifications: the one the change is about) |
 | `s`                     | Choose the column to sort the pane on (see below)   |
 | `r`                     | Refresh both panes now                              |
 | `v`                     | Start a Claude review of the selected merge request (merge request panes) |
@@ -106,7 +106,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `x`                     | Close a finished review (merge request panes)       |
 | `X`                     | Close a review even if Claude is still running (merge request panes) |
 | `w`                     | Switch to the next view: stacked, split, tree (see below) |
-| `n`                     | Show or hide the Notifications pane                 |
+| `n`                     | Show the Notifications pane and focus it, or hide it |
 | `l`                     | Show or hide the API calls pane                     |
 | `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
 | `Ctrl-C`                | Quit immediately                                    |

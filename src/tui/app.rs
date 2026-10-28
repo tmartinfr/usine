@@ -8,7 +8,7 @@ use ratatui::widgets::TableState;
 use usine::api_log::ApiLog;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest};
-use usine::workflows::changes::{finished_reviews, issue_changes, mr_changes};
+use usine::workflows::changes::{Change, finished_reviews, issue_changes, mr_changes};
 use usine::workflows::links::link;
 
 use super::sort::{
@@ -151,6 +151,8 @@ pub enum Focus {
     Gitlab,
     /// Issues and their MRs (tree view only).
     Tree,
+    /// Notifications pane, when shown.
+    Notifications,
 }
 
 /// A row of the split or tree view: indexes of an issue and of an MR in the
@@ -254,8 +256,10 @@ pub struct App {
     /// Changes seen since the last refresh, to send as desktop notifications.
     pub notifications: Vec<String>,
     /// Changes already seen, oldest first, shown in the Notifications pane.
-    pub notified: Vec<(DateTime<Local>, String)>,
+    pub notified: Vec<(DateTime<Local>, Change)>,
     pub show_notifications: bool,
+    /// Selected row and scroll of the Notifications pane.
+    pub notifications_table: TableState,
 }
 
 impl App {
@@ -281,6 +285,7 @@ impl App {
             notifications: Vec::new(),
             notified: Vec::new(),
             show_notifications: false,
+            notifications_table: TableState::default(),
         }
     }
 
@@ -345,7 +350,7 @@ impl App {
                 self.gitlab.set_result(result);
             }
             Msg::Reviews(reviews) => {
-                let changes = finished_reviews(&self.reviews, &reviews);
+                let changes = finished_reviews(&self.reviews, &reviews, self.gitlab.items());
                 self.notify(changes);
                 self.reviews = reviews;
             }
@@ -372,12 +377,16 @@ impl App {
         self.relink(selection);
     }
 
-    fn notify(&mut self, changes: Vec<String>) {
+    fn notify(&mut self, changes: Vec<Change>) {
         let now = Local::now();
-        self.notified.extend(changes.iter().map(|c| (now, c.clone())));
+        self.notifications.extend(changes.iter().map(|c| c.text.clone()));
+        self.notified.extend(changes.into_iter().map(|c| (now, c)));
         let excess = self.notified.len().saturating_sub(NOTIFICATIONS_KEPT);
         self.notified.drain(..excess);
-        self.notifications.extend(changes);
+        // Keep the same notification selected, or the first one when it was dropped.
+        let selected = self.notifications_table.selected().map(|i| i.saturating_sub(excess));
+        let last = self.notified.len().checked_sub(1);
+        self.notifications_table.select(selected.or(last));
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
@@ -402,7 +411,15 @@ impl App {
             }
             KeyCode::Char('r') => return Action::Refresh,
             KeyCode::Char('l') => self.show_calls = !self.show_calls,
-            KeyCode::Char('n') => self.show_notifications = !self.show_notifications,
+            KeyCode::Char('n') => {
+                self.show_notifications = !self.show_notifications;
+                if self.show_notifications {
+                    self.focus = Focus::Notifications;
+                    self.notifications_table.select(self.notified.len().checked_sub(1));
+                } else if self.focus == Focus::Notifications {
+                    self.focus = if self.view == View::Tree { Focus::Tree } else { Focus::Jira };
+                }
+            }
             KeyCode::Char('w') => {
                 let selection = self.linked_selection();
                 (self.view, self.focus) = match (self.view, self.focus) {
@@ -418,6 +435,10 @@ impl App {
             KeyCode::BackTab => self.cycle_focus(false),
             KeyCode::Enter => {
                 let url = match (self.view, self.focus) {
+                    (_, Focus::Notifications) => self
+                        .notifications_table
+                        .selected()
+                        .and_then(|i| self.notified.get(i)?.1.url.as_deref()),
                     (View::Stacked, Focus::Jira) => self.jira.selected().map(Item::url),
                     (View::Split, Focus::Jira) => {
                         self.selected_link().and_then(|(issue, _)| issue).map(Item::url)
@@ -435,6 +456,7 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.select(|current, _| current as isize - 1),
             KeyCode::Char('g') | KeyCode::Home => self.select(|_, _| 0),
             KeyCode::Char('G') | KeyCode::End => self.select(|_, len| len as isize - 1),
+            KeyCode::Char('s') if self.focus == Focus::Notifications => {}
             KeyCode::Char('s') if self.focus == Focus::LinkedMrs => {
                 self.message = Some(Notice::warning(
                     "MRs follow their issue: sort the issues, or the MRs in the stacked view",
@@ -444,8 +466,8 @@ impl App {
                 self.sorting = Some(self.focused_sort().map_or(0, |sort| sort.column));
             }
             // Review keys act on the MR panes.
-            KeyCode::Char('v') if self.focus != Focus::Jira => return self.start_review(),
-            KeyCode::Char('a') if self.focus != Focus::Jira => {
+            KeyCode::Char('v') if self.on_mrs() => return self.start_review(),
+            KeyCode::Char('a') if self.on_mrs() => {
                 return match self.selected_review() {
                     Some(review) => Action::Attach(review.name.clone()),
                     None => {
@@ -455,7 +477,7 @@ impl App {
                     }
                 };
             }
-            KeyCode::Char(c @ ('x' | 'X')) if self.focus != Focus::Jira => {
+            KeyCode::Char(c @ ('x' | 'X')) if self.on_mrs() => {
                 return match self.selected_review() {
                     Some(review) if review.finished || c == 'X' => {
                         Action::CloseReview(review.name.clone())
@@ -471,6 +493,11 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    /// The focused pane lists MRs.
+    fn on_mrs(&self) -> bool {
+        !matches!(self.focus, Focus::Jira | Focus::Notifications)
     }
 
     fn start_review(&mut self) -> Action {
@@ -527,11 +554,14 @@ impl App {
     }
 
     fn cycle_focus(&mut self, forward: bool) {
-        let order: &[Focus] = match self.view {
-            View::Stacked => &[Focus::Jira, Focus::Gitlab],
-            View::Split => &[Focus::Jira, Focus::LinkedMrs],
-            View::Tree => &[Focus::Tree],
+        let mut order = match self.view {
+            View::Stacked => vec![Focus::Jira, Focus::Gitlab],
+            View::Split => vec![Focus::Jira, Focus::LinkedMrs],
+            View::Tree => vec![Focus::Tree],
         };
+        if self.show_notifications {
+            order.push(Focus::Notifications);
+        }
         let len = order.len();
         let current = order.iter().position(|f| *f == self.focus).unwrap_or(0);
         self.focus = order[if forward { (current + 1) % len } else { (current + len - 1) % len }];
@@ -598,6 +628,9 @@ impl App {
 
     fn select(&mut self, target: impl FnOnce(usize, usize) -> isize) {
         match (self.view, self.focus) {
+            (_, Focus::Notifications) => {
+                move_selection(&mut self.notifications_table, self.notified.len(), target)
+            }
             (View::Stacked, Focus::Jira) => self.jira.select(target),
             (View::Stacked, _) => self.gitlab.select(target),
             (View::Split | View::Tree, _) => {
@@ -1150,7 +1183,7 @@ pub mod tests {
         // Jira failed in between: nothing to compare with.
         let expected = ["group/project!2 is no longer listed", "Review of group/project!1 finished"];
         assert_eq!(app.notifications, expected);
-        let notified: Vec<&str> = app.notified.iter().map(|(_, text)| text.as_str()).collect();
+        let notified: Vec<&str> = app.notified.iter().map(|(_, c)| c.text.as_str()).collect();
         assert_eq!(notified, expected);
 
         app.notifications.clear();
@@ -1159,7 +1192,35 @@ pub mod tests {
             app.on_msg(Msg::Reviews(vec![session(1, true)]));
         }
         assert_eq!(app.notified.len(), NOTIFICATIONS_KEPT);
-        assert_eq!(app.notified[0].1, "Review of group/project!1 finished");
+        assert_eq!(app.notified[0].1.text, "Review of group/project!1 finished");
+    }
+
+    #[test]
+    fn notifications_pane_is_browsable_and_opens_items() {
+        let mut app = loaded_app();
+        app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), issue("PAY-2")])));
+        app.on_msg(Msg::Gitlab(Ok(vec![mr(1)])));
+
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focus, Focus::Notifications);
+        // The latest notification is selected.
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Open("https://gitlab.com/group/project/-/merge_requests/2".into())
+        );
+        app.on_key(key(KeyCode::Char('k')));
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Open("https://example.atlassian.net/browse/PAY-3".into())
+        );
+        // Review keys do not act on the MRs from there.
+        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert!(app.starting.is_empty());
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.focus, Focus::Jira);
+        app.on_key(key(KeyCode::BackTab));
+        app.on_key(key(KeyCode::Char('n')));
+        assert_eq!(app.focus, Focus::Jira);
     }
 
     #[test]

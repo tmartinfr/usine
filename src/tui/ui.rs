@@ -575,31 +575,37 @@ fn render_calls(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Changes notified so far, latest at the bottom.
-fn render_notifications(frame: &mut Frame, area: Rect, app: &App) {
+fn render_notifications(frame: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.focus == Focus::Notifications;
+    let title_style = if focused { Style::new().fg(ACCENT).bold() } else { Style::new().bold() };
     let title = vec![
-        Span::styled(" Notifications ", Style::new().bold()),
+        Span::styled(" Notifications ", title_style),
         Span::styled(format!("({}) ", app.notified.len()), Style::new().fg(MUTED)),
         Span::styled(" n", Style::new().fg(ACCENT).bold()),
         Span::styled(": hide ", Style::new().fg(MUTED)),
     ];
-    let block = pane_block(title, MUTED);
+    let block = pane_block(title, if focused { ACCENT } else { MUTED });
     if app.notified.is_empty() {
         let text = Line::from("No notification yet.").fg(MUTED);
         frame.render_widget(Paragraph::new(text).block(block), area);
         return;
     }
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let skip = app.notified.len().saturating_sub(inner_height);
-    let lines: Vec<Line> = app.notified[skip..]
-        .iter()
-        .map(|(at, text)| {
-            Line::from(vec![
-                Span::styled(format!("{}  ", at.format("%H:%M:%S")), Style::new().fg(MUTED)),
-                Span::raw(text.clone()),
-            ])
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let rows = app.notified.iter().map(|(at, change)| {
+        Row::new(vec![
+            Cell::from(at.format("%H:%M:%S").to_string()).fg(MUTED),
+            Cell::from(change.text.clone()),
+        ])
+    });
+    let highlight = if focused {
+        Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    } else {
+        Style::new()
+    };
+    let table = Table::new(rows, [Constraint::Length(8), Constraint::Fill(1)])
+        .column_spacing(2)
+        .block(block)
+        .row_highlight_style(highlight);
+    frame.render_stateful_widget(table, area, &mut app.notifications_table);
 }
 
 const SORT_KEYS: [(&str, &str); 3] = [
@@ -958,7 +964,8 @@ mod tests {
         assert!(draw(&mut app).contains("No notification yet."));
 
         let at = chrono::Local::now();
-        app.notified.push((at, "PAY-1: To Do -> In Progress".into()));
+        let text = "PAY-1: To Do -> In Progress".into();
+        app.notified.push((at, usine::workflows::changes::Change { text, url: None }));
         let screen = draw(&mut app);
         assert!(screen.contains("Notifications (1)  n: hide"), "{screen}");
         let line = format!("{}  PAY-1: To Do -> In Progress", at.format("%H:%M:%S"));
