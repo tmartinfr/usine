@@ -18,7 +18,7 @@ use ratatui::crossterm::terminal::{Clear, ClearType, EnterAlternateScreen, enabl
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use usine::api_log::ApiLog;
 use usine::config::Config;
-use usine::connectors::claude::{ClaudeConfig, Tmux};
+use usine::connectors::claude::{self, ClaudeConfig, Tmux};
 use usine::connectors::git::GitConfig;
 use usine::connectors::gitlab::{GitlabClient, GitlabConfig};
 use usine::connectors::jira::JiraClient;
@@ -102,6 +102,8 @@ impl Sources {
         tokio::task::spawn_blocking(move || {
             // tmux missing or failing: no review to show.
             let _ = tx.send(Msg::Reviews(review::list_reviews(&tmux).unwrap_or_default()));
+            let sessions = review::list_claude_sessions(&tmux).unwrap_or_default();
+            let _ = tx.send(Msg::ClaudeSessions(sessions));
             if let Some(session) = selected
                 && let Ok(text) = tmux.capture(&session, true)
             {
@@ -217,6 +219,22 @@ fn event_loop(
                 Action::StartReview(mr) => sources.start_review(*mr, tx),
                 Action::Attach(session) => {
                     if let Err(err) = attach(terminal, &sources.tmux, &session) {
+                        app.message = Some(Notice::error(format!("{err:#}")));
+                    }
+                    last_poll = None;
+                }
+                Action::ListConversations(mr) => {
+                    let found = match (claude::projects_dir(), &mr.worktree) {
+                        (Some(projects), Some(worktree)) => claude::conversations(&projects, worktree),
+                        _ => Vec::new(),
+                    };
+                    app.show_conversations(mr, found);
+                }
+                Action::StartClaude(mr, conversation) => {
+                    let result =
+                        review::start_claude(&sources.claude, &sources.tmux, &mr, conversation.as_deref())
+                            .and_then(|session| attach(terminal, &sources.tmux, &session));
+                    if let Err(err) = result {
                         app.message = Some(Notice::error(format!("{err:#}")));
                     }
                     last_poll = None;

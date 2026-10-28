@@ -67,7 +67,7 @@ usine tui
 The screen shows three panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
-- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting. The `WORKTREE` column shows the local worktree that has the source branch of the merge request checked out (see [Worktrees](#worktrees)).
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting. The `WORKTREE` column shows the local worktree that has the source branch of the merge request checked out (see [Worktrees](#worktrees)), marked `*` when a Claude session started with `c` exists for it.
 - **Review**: the live screen of the Claude review of the selected merge request.
 - **Notifications** (hidden by default, press `n` to show or hide it): the changes usine notified (see [Notifications](#notifications)), latest at the bottom, with their time. The last 500 are kept. Showing it moves the focus to it with the latest change selected; `Enter` opens the issue or merge request the change is about (for a finished review, its merge request when still listed).
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
@@ -88,7 +88,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 + Review group/backend/api!42 [running]  a: attach ---------------------------+
 | * Reading the diff of group/backend/api!42...                               |
 +-----------------------------------------------------------------------------+
- Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  v: review  a: attach  x: close  w: view  n: notifs  l: calls  q: quit
+ Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  a: attach  x: close  c: claude  w: view  n: notifs  l: calls  q: quit
 ```
 
 | Key                     | Action                                              |
@@ -101,10 +101,10 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `Enter`                 | Open the selected issue or merge request in your browser (in Notifications: the one the change is about) |
 | `s`                     | Choose the column to sort the pane on (see below)   |
 | `r`                     | Refresh both panes now                              |
-| `v`                     | Start a Claude review of the selected merge request (merge request panes) |
 | `a`                     | Attach to the review of the selected merge request (merge request panes) |
 | `x`                     | Close a finished review (merge request panes)       |
 | `X`                     | Close a review even if Claude is still running (merge request panes) |
+| `c`                     | Claude menu of the selected merge request: new session, resume a conversation or review (merge request panes, see below) |
 | `w`                     | Switch to the next view: stacked, split, tree (see below) |
 | `n`                     | Show the Notifications pane and focus it, or hide it |
 | `l`                     | Show or hide the API calls pane                     |
@@ -129,7 +129,7 @@ Press `w` to show each Jira issue next to its merge requests, and `w` again to s
 - **Jira issues** (left) and **GitLab MRs** (right) share their rows. A merge request is linked to an issue when the issue key (e.g. `PAY-123`, case ignored) appears in its source branch, its title or its description, as GitLab does for Jira. An issue with several merge requests takes one row per merge request; an issue without merge request has an empty right side. A merge request mentioning several listed issues is shown next to each of them.
 - The merge requests linked to none of the listed issues come last, with an empty left side.
 - Only the listed merge requests (yours and those you review) can be linked; this view makes no extra request.
-- `Tab` switches between the two sides; moving on either side moves both. `Enter` opens the issue on the left, the merge request on the right. `v`, `a` and `x` act on the merge request of the selected row, which the Review pane follows.
+- `Tab` switches between the two sides; moving on either side moves both. `Enter` opens the issue on the left, the merge request on the right. `c`, `a` and `x` act on the merge request of the selected row, which the Review pane follows.
 - `s` sorts the issues (left). The merge requests follow their issue, in the order of the GitLab sort, which can be changed from the stacked view.
 
 #### Tree view
@@ -156,7 +156,7 @@ From the split view, press `w` to show the issues and their merge requests in a 
 - The merge requests share the issue columns: the merge request under `KEY`, its merge status under `STATUS`, its pipeline under `PRIORITY`, its last update under `UPDATED`, and its role, title and worktree under `SUMMARY`. Each group of merge requests starts with the names of their columns, showing the GitLab sort.
 - Merge requests are linked to issues as in the split view. A merge request mentioning several listed issues is shown below each of them.
 - The merge requests linked to none of the listed issues come last, below the `MRs of no listed issue` row.
-- `Enter` opens the issue or merge request of the selected row. `v`, `a` and `x` act on the selected merge request, which the Review pane follows.
+- `Enter` opens the issue or merge request of the selected row. `c`, `a` and `x` act on the selected merge request, which the Review pane follows.
 - `s` sorts the issues. The merge requests follow their issue, in the order of the GitLab sort, which can be changed from the stacked view.
 
 #### Sorting
@@ -185,6 +185,7 @@ Colors help scanning the panes:
 - Pipeline: green when passed, yellow while running or waiting (pending, manual...), red when failed, grey when canceled or skipped.
 - Role: `reviewer` is highlighted in light blue, `author` is greyed out.
 - Review marker: green while Claude is running, blue once finished, yellow while starting.
+- Worktree: `*` before the path when Claude was started in it with `c`: green while its session runs, blue once Claude exited. Without session, the path is greyed out.
 - Dates of the last 24 hours are highlighted, older ones are greyed out.
 - The Review pane keeps the colors of the Claude session.
 - Messages at the bottom are green (done), yellow (nothing done, e.g. a review already exists) or red (error).
@@ -205,7 +206,7 @@ The title of a pane shows `(refreshing)` while new data is being loaded, and the
 
 ### Reviewing a merge request with Claude
 
-Select a merge request in the GitLab pane and press `v`. usine then:
+Select a merge request in the GitLab pane, press `c`, then choose `3  Review with Claude` (see [Claude menu](#claude-menu)). usine then:
 
 1. finds your local clone of the project under the `roots` of the `[git]` section;
 2. fetches the merge request and its target branch, and checks the merge request out in a dedicated git worktree (`<worktrees_dir>/<project>-mr-<number>`); the files and branches of your clone are not changed;
@@ -216,6 +217,26 @@ The Review pane shows what Claude is doing. Press `a` to attach to the session a
 Reviews keep running when you quit usine and show up again when you restart it. When Claude exits, its last screen stays visible and the review is marked `[finished]`; press `x` to close it. Closing a review does not delete its worktree, so starting a new review of the same merge request reuses and updates it.
 
 Requirements: [tmux](https://github.com/tmux/tmux) and [Claude Code](https://claude.com/claude-code) installed, a local clone of the project (with `origin` pointing to GitLab), and SSH access to GitLab without a passphrase prompt (e.g. via ssh-agent).
+
+### Claude menu
+
+Select a merge request and press `c` to open its Claude menu:
+
+```
++ group/backend/api!42 ------------------+
+|1  New Claude session                   |
+|2  Resume a conversation                |
+|3  Review with Claude                   |
++----------------------------------------+
+```
+
+Move with `j` / `k` and press `Enter`, or press `1`, `2` or `3`. `Esc` closes the menu.
+
+1. **New Claude session** starts Claude Code (with the `command` and `args` of the `[claude]` section) in the worktree of the merge request (see [Worktrees](#worktrees)), inside a tmux session, and attaches to it. Detach with `Ctrl-b d` to come back to usine. If usine runs inside tmux, your tmux client switches to that session instead.
+2. **Resume a conversation** lists the Claude Code conversations of that worktree, most recent first, with the name given to them (`--name` or `/rename`), else the title Claude generated, else their first prompt. `Enter` resumes the selected one in a tmux session as above; `Esc` goes back to the menu.
+3. **Review with Claude** starts a review (see [Reviewing a merge request with Claude](#reviewing-a-merge-request-with-claude)). It does not need a worktree.
+
+New and resumed sessions need a worktree: without one, the first two entries show a warning. One such session runs per merge request: while it runs, `c` attaches to it directly instead of opening the menu; once Claude has exited, the menu opens again and the next session replaces it. The `WORKTREE` column marks the path with `*`, green while the session runs and blue once Claude exited. These sessions keep running when you quit usine. They do not appear in the Review pane.
 
 ### Jira: list issues
 

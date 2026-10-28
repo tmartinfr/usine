@@ -6,12 +6,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::widgets::{Block, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
 use usine::config::display_path;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest, Role, StatusCategory};
 
-use super::app::{App, Content, Focus, Item, Level, Pane, View, review_state};
+use super::app::{App, Content, Focus, Item, Level, MENU_ENTRIES, Menu, Pane, View, review_state};
 use super::sort::{
     ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, merge_readiness, pipeline_rank, priority_rank,
 };
@@ -70,6 +70,51 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         render_calls(frame, calls, app);
     }
     render_footer(frame, footer, app);
+    if let Some(menu) = &mut app.menu {
+        render_menu(frame, frame.area(), menu);
+    }
+}
+
+/// The menu of `c`, centered over the panes.
+fn render_menu(frame: &mut Frame, area: Rect, menu: &mut Menu) {
+    let (title, rows): (String, Vec<Row>) = match &menu.conversations {
+        None => (
+            menu.mr.reference.clone(),
+            MENU_ENTRIES
+                .iter()
+                .enumerate()
+                .map(|(n, entry)| {
+                    Row::new(vec![Cell::from((n + 1).to_string()).fg(ACCENT), Cell::from(*entry)])
+                })
+                .collect(),
+        ),
+        Some(conversations) => (
+            format!("Resume in {}", display_path(menu.mr.worktree.as_deref())),
+            conversations
+                .iter()
+                .map(|c| {
+                    let updated = c.updated.format("%Y-%m-%d %H:%M").to_string();
+                    Row::new(vec![Cell::from(updated).fg(MUTED), Cell::from(c.title.clone())])
+                })
+                .collect(),
+        ),
+    };
+    let first_width = if menu.conversations.is_some() { 16 } else { 1 };
+    let width = area.width.saturating_sub(4).min(100);
+    let height = (rows.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let block = pane_block(vec![Span::styled(format!(" {title} "), Style::new().fg(ACCENT).bold())], ACCENT);
+    let table = Table::new(rows, [Constraint::Length(first_width), Constraint::Fill(1)])
+        .column_spacing(2)
+        .block(block)
+        .row_highlight_style(Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD));
+    frame.render_widget(Clear, popup);
+    frame.render_stateful_widget(table, popup, &mut menu.table);
 }
 
 fn render_stacked(frame: &mut Frame, top: Rect, middle: Rect, app: &mut App) {
@@ -87,8 +132,8 @@ fn render_stacked(frame: &mut Frame, top: Rect, middle: Rect, app: &mut App) {
         },
         &mut app.jira,
     );
-    let (reviews, starting) = (&app.reviews, &app.starting);
-    let merge_request_row = |mr: &MergeRequest| merge_request_row(mr, reviews, starting);
+    let (reviews, starting, claude) = (&app.reviews, &app.starting, &app.claude_sessions);
+    let merge_request_row = |mr: &MergeRequest| merge_request_row(mr, reviews, starting, claude);
     render_pane(
         frame,
         middle,
@@ -120,7 +165,8 @@ fn render_split(frame: &mut Frame, area: Rect, app: &mut App) {
         });
         mr_rows.push(match mr {
             Some(mr) => {
-                let cells = merge_request_row(&mrs[mr], &app.reviews, &app.starting);
+                let cells =
+                    merge_request_row(&mrs[mr], &app.reviews, &app.starting, &app.claude_sessions);
                 SPLIT_MR_CELLS.iter().map(|&c| cells[c].clone()).collect()
             }
             None => blank(SPLIT_MR_CELLS.len()),
@@ -186,7 +232,7 @@ fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
             (_, Some(mr)) => {
                 // The last MR below an issue closes its branch.
                 let last = linked.get(n + 1).is_none_or(|&(i, m)| i != issue || m.is_none());
-                tree_mr_row(&mrs[mr], last, &app.reviews, &app.starting)
+                tree_mr_row(&mrs[mr], last, &app.reviews, &app.starting, &app.claude_sessions)
             }
             (Some(issue), None) => lines(issue_row(&issues[issue])),
             (None, None) => vec![Line::styled(OTHER_MRS, Style::new().fg(MUTED).bold())],
@@ -240,9 +286,10 @@ fn tree_mr_row(
     last: bool,
     reviews: &[Session],
     starting: &[String],
+    claude: &[Session],
 ) -> Vec<Line<'static>> {
     let [marker, role, reference, status, pipeline, updated, worktree, title] =
-        merge_request_row(mr, reviews, starting).try_into().expect("a cell per MR column");
+        merge_request_row(mr, reviews, starting, claude).try_into().expect("a cell per MR column");
     let span = |(text, style): Styled| Span::styled(text, style);
     let branch = if last { "└─ " } else { "├─ " };
     let role = (format!("{:<TREE_ROLE_WIDTH$}", role.0), role.1);
@@ -301,7 +348,13 @@ struct PaneView<'a, T> {
 }
 
 /// Cells of `MR_COLUMNS`.
-fn merge_request_row(mr: &MergeRequest, reviews: &[Session], starting: &[String]) -> Vec<Styled> {
+/// Cells of `mr`, one per MR column. `claude`: sessions running Claude in a worktree.
+fn merge_request_row(
+    mr: &MergeRequest,
+    reviews: &[Session],
+    starting: &[String],
+    claude: &[Session],
+) -> Vec<Styled> {
     let marker = match review_state(reviews, starting, mr) {
         ReviewState::Starting => ("~".to_string(), Style::new().fg(Color::Yellow).bold()),
         ReviewState::Finished => ("*".to_string(), Style::new().fg(Color::Blue).bold()),
@@ -320,9 +373,23 @@ fn merge_request_row(mr: &MergeRequest, reviews: &[Session], starting: &[String]
         (mr.merge_status.clone(), Style::new().fg(merge_status_color(&mr.merge_status))),
         pipeline_cell(mr.pipeline.as_deref()),
         updated_cell(mr.updated),
-        (display_path(mr.worktree.as_deref()), Style::new().fg(MUTED)),
+        worktree_cell(mr, claude),
         (mr.title.clone(), title_style),
     ]
+}
+
+/// Worktree of `mr`, marked `*` when Claude was started in it: green while it
+/// runs, blue once it exited.
+fn worktree_cell(mr: &MergeRequest, claude: &[Session]) -> Styled {
+    let path = display_path(mr.worktree.as_deref());
+    if mr.worktree.is_none() {
+        return (path, Style::new().fg(MUTED));
+    }
+    match claude.iter().find(|s| s.subject == mr.reference) {
+        Some(session) if session.finished => (format!("* {path}"), Style::new().fg(Color::Blue)),
+        Some(_) => (format!("* {path}"), Style::new().fg(Color::Green)),
+        None => (format!("  {path}"), Style::new().fg(MUTED)),
+    }
 }
 
 fn issue_row(issue: &Issue) -> Vec<Styled> {
@@ -623,15 +690,17 @@ const SORT_KEYS: [(&str, &str); 3] = [
     ("Esc", "cancel"),
 ];
 
+const MENU_KEYS: [(&str, &str); 3] = [("j/k", "move"), ("Enter", "choose"), ("Esc", "back")];
+
 const KEYS: [(&str, &str); 12] = [
     ("Tab", "switch"),
     ("j/k", "move"),
     ("Enter", "open"),
     ("s", "sort"),
     ("r", "refresh"),
-    ("v", "review"),
     ("a", "attach"),
     ("x", "close"),
+    ("c", "claude"),
     ("w", "view"),
     ("n", "notifs"),
     ("l", "calls"),
@@ -650,18 +719,19 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Line::from(format!(" {}", notice.text)).fg(color)
         }
         None => {
-            let (mut spans, keys) = match app.sorting {
-                Some(_) => {
+            let (mut spans, keys) = match (app.sorting, &app.menu) {
+                (Some(_), _) => {
                     let label = Span::styled(" Sort by: ", Style::new().fg(ACCENT).bold());
                     (vec![label], &SORT_KEYS[..])
                 }
-                None => (vec![Span::raw(" ")], &KEYS[..]),
+                (None, Some(_)) => (vec![Span::raw(" ")], &MENU_KEYS[..]),
+                (None, None) => (vec![Span::raw(" ")], &KEYS[..]),
             };
             for (key, action) in keys {
                 spans.push(Span::styled(*key, Style::new().fg(ACCENT).bold()));
                 spans.push(Span::styled(format!(": {action}  "), Style::new().fg(MUTED)));
             }
-            if let Some(at) = app.last_update.filter(|_| app.sorting.is_none()) {
+            if let Some(at) = app.last_update.filter(|_| app.sorting.is_none() && app.menu.is_none()) {
                 spans.push(Span::styled(format!("updated {}", at.format("%H:%M")), Style::new().fg(MUTED)));
             }
             Line::from(spans)
@@ -678,6 +748,8 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
+    use usine::connectors::claude::Conversation;
+
     use crate::tui::app::{Msg, Notice};
     use crate::tui::app::tests::{issue, mr, session, split_app, tree_app};
 
@@ -727,8 +799,15 @@ mod tests {
         let screen = draw(&mut app);
 
         assert!(screen.contains("Jira issues (2)"), "{screen}");
-        assert!(screen.contains("WORKTREE       TITLE"), "{screen}");
-        assert!(screen.contains("/srv/api-feat  MR 42"), "{screen}");
+        assert!(screen.contains("WORKTREE         TITLE"), "{screen}");
+        assert!(screen.contains("  /srv/api-feat  MR 42"), "{screen}");
+
+        let claude = |finished| Session { name: "c".into(), subject: "group/project!42".into(), finished };
+        app.on_msg(Msg::ClaudeSessions(vec![claude(false)]));
+        let buffer = draw_buffer(&mut app);
+        assert_eq!(style_of(&buffer, "* /srv/api-feat").fg, Some(Color::Green));
+        app.on_msg(Msg::ClaudeSessions(vec![claude(true)]));
+        assert_eq!(style_of(&draw_buffer(&mut app), "* /srv/api-feat").fg, Some(Color::Blue));
         assert!(screen.contains("GitLab MRs (1)"), "{screen}");
         assert!(screen.contains("KEY    STATUS ^  PRIORITY  UPDATED     SUMMARY"), "{screen}");
         assert!(screen.contains("PAY-2  To Do     -         2026-10-10  Summary of PAY-2"), "{screen}");
@@ -985,6 +1064,29 @@ mod tests {
 
         app.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(!draw(&mut app).contains("Notifications"));
+    }
+
+    #[test]
+    fn c_menu_is_drawn_over_the_panes() {
+        let mut app = App::new(true, true, "config.toml".into());
+        let worktree = Some("/srv/api-feat".into());
+        app.on_msg(Msg::Gitlab(Ok(vec![MergeRequest { worktree, ..mr(42) }])));
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        let screen = draw(&mut app);
+        assert!(screen.contains(" group/project!42 "), "{screen}");
+        assert!(screen.contains("1  New Claude session"), "{screen}");
+        assert!(screen.contains("3  Review with Claude"), "{screen}");
+        assert!(screen.contains("Enter: choose"), "{screen}");
+
+        let mr = Box::new(app.gitlab.items()[0].clone());
+        let updated = chrono::Local::now();
+        let conversation = Conversation { id: "a".into(), title: "Fix the retry loop".into(), updated };
+        app.show_conversations(mr, vec![conversation]);
+        let screen = draw(&mut app);
+        assert!(screen.contains("Resume in /srv/api-feat"), "{screen}");
+        let line = format!("{}  Fix the retry loop", updated.format("%Y-%m-%d %H:%M"));
+        assert!(screen.contains(&line), "{screen}");
     }
 
     #[test]

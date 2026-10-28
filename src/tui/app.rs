@@ -6,7 +6,7 @@ use chrono::{DateTime, Local};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::TableState;
 use usine::api_log::ApiLog;
-use usine::connectors::claude::Session;
+use usine::connectors::claude::{Conversation, Session};
 use usine::model::{Issue, MergeRequest};
 use usine::workflows::changes::{Change, finished_reviews, issue_changes, mr_changes};
 use usine::workflows::links::link;
@@ -33,6 +33,23 @@ impl Item for Issue {
 impl Item for MergeRequest {
     fn url(&self) -> &str {
         &self.url
+    }
+}
+
+/// Entries of the menu `c` opens, in order.
+pub const MENU_ENTRIES: [&str; 3] = ["New Claude session", "Resume a conversation", "Review with Claude"];
+
+/// Menu of what to run on an MR: `MENU_ENTRIES`, or the conversations to resume.
+pub struct Menu {
+    pub mr: Box<MergeRequest>,
+    /// None: the main menu.
+    pub conversations: Option<Vec<Conversation>>,
+    pub table: TableState,
+}
+
+impl Menu {
+    fn new(mr: Box<MergeRequest>, conversations: Option<Vec<Conversation>>, row: usize) -> Self {
+        Self { mr, conversations, table: TableState::default().with_selected(row) }
     }
 }
 
@@ -186,6 +203,11 @@ pub enum Action {
     Attach(String),
     /// Kill this tmux session.
     CloseReview(String),
+    /// Start Claude in the worktree of this MR, resuming this conversation if
+    /// any, then attach to it.
+    StartClaude(Box<MergeRequest>, Option<String>),
+    /// List the conversations to resume in the worktree of this MR.
+    ListConversations(Box<MergeRequest>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -220,6 +242,8 @@ pub enum Msg {
     Jira(Result<Vec<Issue>, String>),
     Gitlab(Result<Vec<MergeRequest>, String>),
     Reviews(Vec<Session>),
+    /// Sessions running Claude in the worktree of an MR.
+    ClaudeSessions(Vec<Session>),
     Preview { session: String, text: String },
     ReviewStarted { mr: String, result: Result<String, String> },
     Notice(Notice),
@@ -236,6 +260,10 @@ pub struct App {
     pub reviews: Vec<Session>,
     /// MR references whose review is being set up.
     pub starting: Vec<String>,
+    /// Sessions running Claude in a worktree; `subject` is the MR reference.
+    pub claude_sessions: Vec<Session>,
+    /// Menu opened by `c`.
+    pub menu: Option<Menu>,
     /// Last captured screen of a review session: (session name, text).
     pub preview: Option<(String, String)>,
     /// Column being chosen to sort the focused pane on.
@@ -273,6 +301,8 @@ impl App {
             message: None,
             reviews: Vec::new(),
             starting: Vec::new(),
+            claude_sessions: Vec::new(),
+            menu: None,
             preview: None,
             sorting: None,
             confirm_quit: false,
@@ -354,6 +384,7 @@ impl App {
                 self.notify(changes);
                 self.reviews = reviews;
             }
+            Msg::ClaudeSessions(sessions) => self.claude_sessions = sessions,
             Msg::Preview { session, text } => self.preview = Some((session, text)),
             Msg::ReviewStarted { mr, result } => {
                 self.starting.retain(|r| *r != mr);
@@ -400,6 +431,9 @@ impl App {
         }
         if let Some(column) = self.sorting {
             return self.on_sort_key(key, column);
+        }
+        if self.menu.is_some() {
+            return self.on_menu_key(key);
         }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -466,13 +500,21 @@ impl App {
                 self.sorting = Some(self.focused_sort().map_or(0, |sort| sort.column));
             }
             // Review keys act on the MR panes.
-            KeyCode::Char('v') if self.on_mrs() => return self.start_review(),
+            KeyCode::Char('c') if self.on_mrs() => {
+                let Some(mr) = self.selected_mr().cloned() else { return Action::None };
+                let running =
+                    self.claude_sessions.iter().find(|s| s.subject == mr.reference && !s.finished);
+                if let Some(session) = running {
+                    return Action::Attach(session.name.clone());
+                }
+                self.menu = Some(Menu::new(Box::new(mr), None, 0));
+            }
             KeyCode::Char('a') if self.on_mrs() => {
                 return match self.selected_review() {
                     Some(review) => Action::Attach(review.name.clone()),
                     None => {
                         self.message =
-                            Some(Notice::warning("No review for this MR, press v to start one"));
+                            Some(Notice::warning("No review for this MR, press c to start one"));
                         Action::None
                     }
                 };
@@ -500,10 +542,70 @@ impl App {
         !matches!(self.focus, Focus::Jira | Focus::Notifications)
     }
 
-    fn start_review(&mut self) -> Action {
-        let Some(mr) = self.selected_mr().cloned() else {
-            return Action::None;
+    /// Shows the conversations to resume, or the main menu when there is none.
+    pub fn show_conversations(&mut self, mr: Box<MergeRequest>, conversations: Vec<Conversation>) {
+        if conversations.is_empty() {
+            self.message = Some(Notice::warning("No conversation to resume in this worktree"));
+            self.menu = Some(Menu::new(mr, None, 1));
+        } else {
+            self.menu = Some(Menu::new(mr, Some(conversations), 0));
+        }
+    }
+
+    /// Keys while the menu is open: Enter (or 1-3 in the main menu) chooses,
+    /// Esc goes back.
+    fn on_menu_key(&mut self, key: KeyEvent) -> Action {
+        let Some(menu) = &mut self.menu else { return Action::None };
+        let len = menu.conversations.as_ref().map_or(MENU_ENTRIES.len(), Vec::len);
+        let choice = match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Action::Quit;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                move_selection(&mut menu.table, len, |current, _| current as isize + 1);
+                return Action::None;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                move_selection(&mut menu.table, len, |current, _| current as isize - 1);
+                return Action::None;
+            }
+            KeyCode::Char('g') | KeyCode::Home => {
+                move_selection(&mut menu.table, len, |_, _| 0);
+                return Action::None;
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                move_selection(&mut menu.table, len, |_, len| len as isize - 1);
+                return Action::None;
+            }
+            KeyCode::Char(c @ '1'..='3') if menu.conversations.is_none() => c as usize - '1' as usize,
+            KeyCode::Enter => menu.table.selected().unwrap_or(0),
+            KeyCode::Char('q') | KeyCode::Esc if menu.conversations.is_some() => {
+                menu.conversations = None;
+                menu.table.select(Some(1));
+                return Action::None;
+            }
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.menu = None;
+                return Action::None;
+            }
+            _ => return Action::None,
         };
+        let Some(Menu { mr, conversations, .. }) = self.menu.take() else { return Action::None };
+        if let Some(conversations) = conversations {
+            return Action::StartClaude(mr, Some(conversations[choice].id.clone()));
+        }
+        match choice {
+            0 | 1 if mr.worktree.is_none() => {
+                self.message = Some(Notice::warning("No local worktree for this MR"));
+                Action::None
+            }
+            0 => Action::StartClaude(mr, None),
+            1 => Action::ListConversations(mr),
+            _ => self.start_review(*mr),
+        }
+    }
+
+    fn start_review(&mut self, mr: MergeRequest) -> Action {
         if self.review_of(&mr.reference).is_some() {
             self.message = Some(Notice::warning("This MR already has a review, press a to attach"));
             return Action::None;
@@ -714,6 +816,12 @@ pub mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// Starts a review from the `c` menu.
+    fn review(app: &mut App) -> Action {
+        app.on_key(key(KeyCode::Char('c')));
+        app.on_key(key(KeyCode::Char('3')))
+    }
+
     fn loaded_app() -> App {
         let mut app = App::new(true, true, "config.toml".into());
         app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), issue("PAY-2"), issue("PAY-3")])));
@@ -845,20 +953,20 @@ pub mod tests {
     #[test]
     fn review_keys_only_act_on_gitlab_pane() {
         let mut app = loaded_app();
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(review(&mut app), Action::None);
         assert_eq!(app.on_key(key(KeyCode::Char('a'))), Action::None);
         assert!(app.starting.is_empty());
     }
 
     #[test]
-    fn v_starts_a_review_once() {
+    fn menu_starts_a_review_once() {
         let mut app = loaded_app();
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Char('j')));
 
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::StartReview(Box::new(mr(2))));
+        assert_eq!(review(&mut app), Action::StartReview(Box::new(mr(2))));
         assert_eq!(app.starting, ["group/project!2"]);
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(review(&mut app), Action::None);
         assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("Review already starting"));
 
         app.on_msg(Msg::ReviewStarted {
@@ -867,7 +975,7 @@ pub mod tests {
         });
         assert!(app.starting.is_empty());
         assert_eq!(app.selected_review(), Some(&session(2, false)));
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(review(&mut app), Action::None);
         assert!(app.message.as_ref().map(|m| m.text.as_str()).unwrap().contains("press a to attach"));
     }
 
@@ -875,7 +983,7 @@ pub mod tests {
     fn failed_start_is_reported() {
         let mut app = loaded_app();
         app.on_key(key(KeyCode::Tab));
-        app.on_key(key(KeyCode::Char('v')));
+        review(&mut app);
         app.on_msg(Msg::ReviewStarted {
             mr: "group/project!1".into(),
             result: Err("no local clone".into()),
@@ -1058,6 +1166,58 @@ pub mod tests {
     }
 
     #[test]
+    fn c_attaches_to_running_claude_or_opens_the_menu() {
+        let mut app = loaded_app();
+        assert_eq!(app.on_key(key(KeyCode::Char('c'))), Action::None);
+        assert!(app.menu.is_none());
+        app.on_key(key(KeyCode::Tab));
+
+        // No worktree: only the review can start.
+        app.on_key(key(KeyCode::Char('c')));
+        assert_eq!(app.on_key(key(KeyCode::Char('1'))), Action::None);
+        assert_eq!(app.message.as_ref().unwrap().text, "No local worktree for this MR");
+        assert!(app.menu.is_none());
+
+        let with_worktree = MergeRequest { worktree: Some("/srv/api".into()), ..mr(1) };
+        app.on_msg(Msg::Gitlab(Ok(vec![with_worktree.clone(), mr(2)])));
+        let boxed = || Box::new(with_worktree.clone());
+        app.on_key(key(KeyCode::Char('c')));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::StartClaude(boxed(), None));
+        app.on_key(key(KeyCode::Char('c')));
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::ListConversations(boxed()));
+
+        // Back to the main menu when there is nothing to resume.
+        app.show_conversations(boxed(), Vec::new());
+        assert_eq!(app.message.as_ref().unwrap().text, "No conversation to resume in this worktree");
+        assert_eq!(app.menu.as_ref().unwrap().table.selected(), Some(1));
+
+        let conversation = |id: &str| Conversation {
+            id: id.into(),
+            title: format!("about {id}"),
+            updated: Local::now(),
+        };
+        app.show_conversations(boxed(), vec![conversation("a"), conversation("b")]);
+        app.on_key(key(KeyCode::Char('G')));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::StartClaude(boxed(), Some("b".into())));
+
+        // Esc goes back from the conversations, then closes the menu.
+        app.show_conversations(boxed(), vec![conversation("a")]);
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.menu.as_ref().unwrap().conversations.is_none());
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.menu.is_none());
+        assert!(!app.confirm_quit);
+
+        let claude = |finished| Session { name: "usine-claude-x".into(), subject: mr(1).reference, finished };
+        app.on_msg(Msg::ClaudeSessions(vec![claude(true)]));
+        app.on_key(key(KeyCode::Char('c')));
+        assert!(app.menu.take().is_some());
+        app.on_msg(Msg::ClaudeSessions(vec![claude(false)]));
+        assert_eq!(app.on_key(key(KeyCode::Char('c'))), Action::Attach("usine-claude-x".into()));
+    }
+
+    #[test]
     fn tree_rows_open_and_review_their_issue_or_mr() {
         let mut app = tree_app();
         // The selected MR of the split view stays selected.
@@ -1066,11 +1226,11 @@ pub mod tests {
         let open = |app: &mut App| app.on_key(key(KeyCode::Enter));
         assert_eq!(open(&mut app), Action::Open(issue("PAY-1").url));
         assert_eq!(app.selected_mr(), None);
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(review(&mut app), Action::None);
 
         app.on_key(key(KeyCode::Char('j')));
         assert_eq!(open(&mut app), Action::Open(mr(1).url));
-        let action = app.on_key(key(KeyCode::Char('v')));
+        let action = review(&mut app);
         assert_eq!(action, Action::StartReview(Box::new(linked_mr(1, "PAY-1"))));
 
         // The row above the MRs of no listed issue opens nothing.
@@ -1139,10 +1299,10 @@ pub mod tests {
     #[test]
     fn review_keys_act_on_the_linked_mrs() {
         let mut app = split_app();
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(review(&mut app), Action::None);
 
         app.on_key(key(KeyCode::Tab));
-        let action = app.on_key(key(KeyCode::Char('v')));
+        let action = review(&mut app);
         assert_eq!(action, Action::StartReview(Box::new(linked_mr(1, "PAY-1"))));
 
         app.on_key(key(KeyCode::Char('s')));
@@ -1215,7 +1375,7 @@ pub mod tests {
             Action::Open("https://example.atlassian.net/browse/PAY-3".into())
         );
         // Review keys do not act on the MRs from there.
-        assert_eq!(app.on_key(key(KeyCode::Char('v'))), Action::None);
+        assert_eq!(review(&mut app), Action::None);
         assert!(app.starting.is_empty());
         app.on_key(key(KeyCode::Tab));
         assert_eq!(app.focus, Focus::Jira);

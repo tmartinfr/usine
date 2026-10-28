@@ -1,5 +1,5 @@
-//! Review of a GitLab merge request by a Claude Code session running in a
-//! dedicated git worktree.
+//! Claude Code sessions on GitLab merge requests: reviews in a dedicated git
+//! worktree, and resumed sessions in the worktree of the source branch.
 
 use anyhow::{Context, Result, bail};
 
@@ -9,6 +9,7 @@ use crate::connectors::gitlab::GitlabConfig;
 use crate::model::MergeRequest;
 
 const SESSION_PREFIX: &str = "usine-review-";
+const RESUME_PREFIX: &str = "usine-claude-";
 
 /// `group/sub.project` -> `group-sub-project`
 fn slug(text: &str) -> String {
@@ -58,6 +59,40 @@ pub fn start_review(
         claude.review_prompt_for(&mr.url, &mr.target_branch),
     ]);
     tmux.start(&name, &mr.reference, &worktree, &command)?;
+    Ok(name)
+}
+
+/// Sessions started by `start_claude`, running or finished. Their subject is
+/// the MR reference.
+pub fn list_claude_sessions(tmux: &Tmux) -> Result<Vec<Session>> {
+    tmux.sessions(RESUME_PREFIX)
+}
+
+/// Runs Claude in the worktree of `mr`, resuming `conversation` if any, in a
+/// tmux session reused while Claude runs (restarted once it exited). Returns
+/// the session name.
+pub fn start_claude(
+    claude: &ClaudeConfig,
+    tmux: &Tmux,
+    mr: &MergeRequest,
+    conversation: Option<&str>,
+) -> Result<String> {
+    let worktree = mr
+        .worktree
+        .as_deref()
+        .with_context(|| format!("no local worktree on the branch of {}", mr.reference))?;
+    let name = format!("{RESUME_PREFIX}{}-{}", slug(&mr.project), mr.iid);
+    match tmux.sessions(&name)?.into_iter().find(|s| s.name == name) {
+        Some(session) if !session.finished => return Ok(name),
+        Some(_) => tmux.kill(&name)?,
+        None => {}
+    }
+    let mut command = vec![claude.command.clone()];
+    command.extend(claude.args.iter().cloned());
+    if let Some(id) = conversation {
+        command.extend(["--resume".into(), id.into()]);
+    }
+    tmux.start(&name, &mr.reference, worktree, &command)?;
     Ok(name)
 }
 
@@ -207,5 +242,68 @@ mod tests {
         let err = start_review(&gitlab, &git_config, &ClaudeConfig::default(), &Tmux::with_socket(&socket), &mr)
             .unwrap_err();
         assert!(err.to_string().contains("no local clone of gitlab.com/group/api"), "{err}");
+    }
+
+    #[test]
+    fn starts_claude_in_the_worktree_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = format!("usine-test-{}-claude", std::process::id());
+        let _server = Server(socket.clone());
+        let tmux = Tmux::with_socket(&socket);
+        let claude = |script: &str| ClaudeConfig {
+            command: "sh".into(),
+            args: vec!["-c".into(), script.into()],
+            ..ClaudeConfig::default()
+        };
+        let mut mr = MergeRequest {
+            source: Source::Gitlab,
+            reference: "group/api!7".into(),
+            project: "group/api".into(),
+            iid: 7,
+            title: String::new(),
+            description: String::new(),
+            draft: false,
+            merge_status: String::new(),
+            pipeline: None,
+            role: Role::Author,
+            source_branch: "feat".into(),
+            target_branch: "main".into(),
+            author: String::new(),
+            updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
+            url: String::new(),
+            worktree: None,
+        };
+        let wait_for = |name: &str, text: &str| {
+            let start = Instant::now();
+            loop {
+                let screen = tmux.capture(name, false).unwrap();
+                if screen.contains(text) || start.elapsed() > Duration::from_secs(5) {
+                    return screen;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        };
+        let err = start_claude(&claude("true"), &tmux, &mr, None).unwrap_err();
+        assert!(err.to_string().contains("no local worktree"), "{err}");
+
+        // Fresh: no argument; exits at once so that the next start replaces it.
+        mr.worktree = Some(tmp.path().to_path_buf());
+        let name = start_claude(&claude("echo \"args=[$*]\"; pwd"), &tmux, &mr, None).unwrap();
+        assert_eq!(name, "usine-claude-group-api-7");
+        let screen = wait_for(&name, "Pane is dead");
+        assert!(screen.contains("args=[]"), "{screen}");
+        let dir = tmp.path().file_name().unwrap().to_str().unwrap();
+        assert!(screen.contains(dir), "{screen}");
+
+        // Finished: restarted, resuming the conversation.
+        let resume = claude("echo \"args=[$0 $*]\"; sleep 30");
+        assert_eq!(start_claude(&resume, &tmux, &mr, Some("abc")).unwrap(), name);
+        let screen = wait_for(&name, "args=[--resume");
+        assert!(screen.contains("args=[--resume abc]"), "{screen}");
+
+        // Running: the same session is reused, and it is no review.
+        assert_eq!(start_claude(&claude("true"), &tmux, &mr, None).unwrap(), name);
+        assert_eq!(list_claude_sessions(&tmux).unwrap().len(), 1);
+        assert!(list_reviews(&tmux).unwrap().is_empty());
     }
 }
