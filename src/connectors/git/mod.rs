@@ -8,4 +8,4 @@ mod tests;
 
 pub use config::GitConfig;
 pub use remote::parse_remote;
-pub use repo::{find_clone, prepare_mr_worktree};
+pub use repo::{branch_worktrees, find_clone, prepare_mr_worktree};

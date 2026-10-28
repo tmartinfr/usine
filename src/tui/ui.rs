@@ -7,6 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Cell, Paragraph, Row, Table, TableState, Wrap};
+use usine::config::display_path;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest, Role, StatusCategory};
 
@@ -27,7 +28,7 @@ const MR_HEADER: Color = Color::Indexed(208);
 type Styled = (String, Style);
 
 /// Columns of the MRs in the split view, as indexes into `MR_COLUMNS`.
-const SPLIT_MR_CELLS: [usize; 6] = [0, 1, 2, 3, 4, 6];
+const SPLIT_MR_CELLS: [usize; 7] = [0, 1, 2, 3, 4, 6, 7];
 /// Row of the tree view above the MRs of no listed issue.
 const OTHER_MRS: &str = "MRs of no listed issue";
 /// Width of the role of the MRs in the tree view, so that their titles line up.
@@ -240,7 +241,7 @@ fn tree_mr_row(
     reviews: &[Session],
     starting: &[String],
 ) -> Vec<Line<'static>> {
-    let [marker, role, reference, status, pipeline, updated, title] =
+    let [marker, role, reference, status, pipeline, updated, worktree, title] =
         merge_request_row(mr, reviews, starting).try_into().expect("a cell per MR column");
     let span = |(text, style): Styled| Span::styled(text, style);
     let branch = if last { "└─ " } else { "├─ " };
@@ -255,14 +256,15 @@ fn tree_mr_row(
         Line::from(span(status)),
         Line::from(span(pipeline)),
         Line::from(span(updated)),
-        Line::from(vec![span(role), span(title)]),
+        // The issue columns have no room for the worktree: it follows the title.
+        Line::from(vec![span(role), span(title), Span::raw("  "), span(worktree)]),
     ]
 }
 
 /// Names of the MR columns of the tree view, laid out as `tree_mr_row`, with
 /// the sort of the MRs.
 fn tree_mr_header(sort: Option<Sort>) -> Vec<Line<'static>> {
-    let [marker, role, reference, status, pipeline, updated, title] =
+    let [marker, role, reference, status, pipeline, updated, worktree, title] =
         header_labels(&MR_COLUMNS, sort).try_into().expect("a label per MR column");
     let label = |text: String| Span::styled(text, Style::new().fg(MR_HEADER).underlined());
     // The padding of the role is not underlined.
@@ -272,7 +274,13 @@ fn tree_mr_header(sort: Option<Sort>) -> Vec<Line<'static>> {
         Line::from(label(status)),
         Line::from(label(pipeline)),
         Line::from(label(updated)),
-        Line::from(vec![label(role), Span::raw(padding), label(title)]),
+        Line::from(vec![
+            label(role),
+            Span::raw(padding),
+            label(title),
+            Span::raw("  "),
+            label(worktree),
+        ]),
     ]
 }
 
@@ -312,6 +320,7 @@ fn merge_request_row(mr: &MergeRequest, reviews: &[Session], starting: &[String]
         (mr.merge_status.clone(), Style::new().fg(merge_status_color(&mr.merge_status))),
         pipeline_cell(mr.pipeline.as_deref()),
         updated_cell(mr.updated),
+        (display_path(mr.worktree.as_deref()), Style::new().fg(MUTED)),
         (mr.title.clone(), title_style),
     ]
 }
@@ -712,11 +721,14 @@ mod tests {
     fn renders_both_panes_with_data() {
         let mut app = App::new(true, true, "config.toml".into());
         app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), issue("PAY-2")])));
-        app.on_msg(Msg::Gitlab(Ok(vec![mr(42)])));
+        let worktree = Some("/srv/api-feat".into());
+        app.on_msg(Msg::Gitlab(Ok(vec![MergeRequest { worktree, ..mr(42) }])));
 
         let screen = draw(&mut app);
 
         assert!(screen.contains("Jira issues (2)"), "{screen}");
+        assert!(screen.contains("WORKTREE       TITLE"), "{screen}");
+        assert!(screen.contains("/srv/api-feat  MR 42"), "{screen}");
         assert!(screen.contains("GitLab MRs (1)"), "{screen}");
         assert!(screen.contains("KEY    STATUS ^  PRIORITY  UPDATED     SUMMARY"), "{screen}");
         assert!(screen.contains("PAY-2  To Do     -         2026-10-10  Summary of PAY-2"), "{screen}");

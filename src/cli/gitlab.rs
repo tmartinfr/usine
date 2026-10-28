@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::Subcommand;
 use usine::config::Config;
 use usine::connectors::gitlab::GitlabClient;
+use usine::workflows::worktrees::find_worktrees;
 
 #[derive(Debug, Subcommand)]
 pub enum GitlabCommand {
@@ -27,7 +28,10 @@ pub async fn run(command: GitlabCommand, config: &Config, config_path: &Path) ->
 
     match command {
         GitlabCommand::Mrs { limit, json } => {
-            let mrs = client.my_open_merge_requests(limit).await?;
+            let mut mrs = client.my_open_merge_requests(limit).await?;
+            if let Some(git) = &config.git {
+                find_worktrees(gitlab, git, &mut mrs);
+            }
             super::print_merge_requests(&mrs, json)
         }
     }

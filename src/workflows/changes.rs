@@ -130,6 +130,7 @@ mod tests {
             role,
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: format!("https://gitlab/{iid}"),
+            worktree: None,
         }
     }
 

@@ -679,6 +679,7 @@ pub mod tests {
             author: "me".into(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: format!("https://gitlab.com/group/project/-/merge_requests/{iid}"),
+            worktree: None,
         }
     }
 

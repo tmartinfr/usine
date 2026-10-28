@@ -78,6 +78,7 @@ impl RawMergeRequest {
             role,
             updated: self.updated_at,
             url: self.web_url,
+            worktree: None,
         }
     }
 }

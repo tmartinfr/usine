@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use super::{find_clone, prepare_mr_worktree};
+use super::{branch_worktrees, find_clone, prepare_mr_worktree};
 
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -79,4 +79,22 @@ fn reports_missing_mr() {
     let err = prepare_mr_worktree(&tmp.path().join("clone"), 99, "main", &tmp.path().join("wt"))
         .unwrap_err();
     assert!(err.to_string().contains("git fetch"), "{err}");
+}
+
+#[test]
+fn lists_worktrees_on_a_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let clone = tmp.path().join("clone");
+    init_repo(&clone, "git@gitlab.com:group/api.git");
+    git(&clone, &["commit", "--quiet", "--allow-empty", "-m", "base"]);
+    let feat = tmp.path().join("feat");
+    git(&clone, &["worktree", "add", "--quiet", "-b", "feat", feat.to_str().unwrap()]);
+    let detached = tmp.path().join("detached");
+    git(&clone, &["worktree", "add", "--quiet", "--detach", detached.to_str().unwrap()]);
+
+    let canonical = |path: &Path| path.canonicalize().unwrap();
+    assert_eq!(
+        branch_worktrees(&clone).unwrap(),
+        [(canonical(&clone), "main".to_string()), (canonical(&feat), "feat".to_string())]
+    );
 }

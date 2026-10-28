@@ -24,6 +24,7 @@ use usine::connectors::gitlab::{GitlabClient, GitlabConfig};
 use usine::connectors::jira::JiraClient;
 use usine::model::MergeRequest;
 use usine::workflows::review;
+use usine::workflows::worktrees::find_worktrees;
 
 use app::{Action, App, Msg, Notice};
 
@@ -72,8 +73,8 @@ impl Sources {
                 let _ = tx.send(Msg::Jira(result));
             });
         }
-        if let Some((client, _)) = &self.gitlab {
-            let (client, tx) = (client.clone(), tx.clone());
+        if let Some((client, gitlab)) = &self.gitlab {
+            let (client, gitlab, git, tx) = (client.clone(), gitlab.clone(), self.git.clone(), tx.clone());
             tokio::spawn(async move {
                 let result = tokio::try_join!(
                     client.my_open_merge_requests(LIMIT),
@@ -81,6 +82,15 @@ impl Sources {
                 )
                 .map(|(authored, to_review)| merge_lists(authored, to_review, LIMIT))
                 .map_err(|e| format!("{e:#}"));
+                let result = match (result, git) {
+                    (Ok(mut mrs), Some(git)) => tokio::task::spawn_blocking(move || {
+                        find_worktrees(&gitlab, &git, &mut mrs);
+                        mrs
+                    })
+                    .await
+                    .map_err(|e| format!("{e:#}")),
+                    (result, _) => result,
+                };
                 let _ = tx.send(Msg::Gitlab(result));
             });
         }

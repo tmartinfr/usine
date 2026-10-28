@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use usine::config::Config;
+use usine::config::{Config, display_path};
 use usine::model::{Issue, MergeRequest};
 
 #[derive(Debug, Parser)]
@@ -102,11 +102,12 @@ fn merge_requests_table(mrs: &[MergeRequest]) -> String {
                 m.pipeline.clone().unwrap_or_else(|| "-".into()),
                 m.target_branch.clone(),
                 m.updated.format("%Y-%m-%d").to_string(),
+                display_path(m.worktree.as_deref()),
                 m.title.clone(),
             ]
         })
         .collect();
-    table(&["MR", "STATUS", "PIPELINE", "TARGET", "UPDATED", "TITLE"], &rows)
+    table(&["MR", "STATUS", "PIPELINE", "TARGET", "UPDATED", "WORKTREE", "TITLE"], &rows)
 }
 
 /// Left-aligned columns; the last one is truncated so lines fit in `MAX_WIDTH`.
@@ -198,12 +199,15 @@ mod tests {
             author: "thomas".into(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: "https://gitlab.com/group/project/-/merge_requests/42".into(),
+            worktree: None,
         };
         assert_eq!(
-            merge_requests_table(&[mr]),
-            "MR                STATUS     PIPELINE  TARGET  UPDATED     TITLE\n\
-             group/project!42  mergeable  -         main    2026-10-10  Add retry\n"
+            merge_requests_table(std::slice::from_ref(&mr)),
+            "MR                STATUS     PIPELINE  TARGET  UPDATED     WORKTREE  TITLE\n\
+             group/project!42  mergeable  -         main    2026-10-10  -         Add retry\n"
         );
+        let mr = MergeRequest { worktree: Some("/srv/api-feat".into()), ..mr };
+        assert!(merge_requests_table(&[mr]).contains("2026-10-10  /srv/api-feat  Add retry"));
     }
 
     #[test]

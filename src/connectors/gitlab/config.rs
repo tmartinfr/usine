@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 /// `[gitlab]` section of `config.toml`.
@@ -8,6 +9,16 @@ pub struct GitlabConfig {
     pub url: String,
     /// Personal access token with `read_api` scope.
     pub token: String,
+}
+
+impl GitlabConfig {
+    /// Host of the instance, as found in the remotes of local clones.
+    pub fn host(&self) -> Result<String> {
+        reqwest::Url::parse(&self.url)
+            .ok()
+            .and_then(|url| url.host_str().map(str::to_string))
+            .with_context(|| format!("cannot read the host of GitLab url {:?}", self.url))
+    }
 }
 
 fn default_url() -> String {

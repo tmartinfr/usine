@@ -27,6 +27,15 @@ pub fn expand_home(path: &str) -> PathBuf {
     }
 }
 
+/// `path` with a leading home directory shown as `~`, `-` for None.
+pub fn display_path(path: Option<&Path>) -> String {
+    let Some(path) = path else { return "-".into() };
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 impl Config {
     /// `~/.config/usine/config.toml` on Linux.
     pub fn default_path() -> Result<PathBuf> {

@@ -63,6 +63,21 @@ pub fn prepare_mr_worktree(clone: &Path, iid: u64, target_branch: &str, dest: &P
     }
 }
 
+/// Worktrees of `clone`, itself included, with the branch they have checked
+/// out: `(path, branch)`. Detached worktrees are left out.
+pub fn branch_worktrees(clone: &Path) -> Result<Vec<(PathBuf, String)>> {
+    let output = git_output(clone, &["worktree", "list", "--porcelain"])?;
+    // Entries are blocks of lines separated by an empty line.
+    Ok(output
+        .split("\n\n")
+        .filter_map(|entry| {
+            let path = entry.lines().find_map(|l| l.strip_prefix("worktree "))?;
+            let branch = entry.lines().find_map(|l| l.strip_prefix("branch refs/heads/"))?;
+            Some((PathBuf::from(path), branch.to_string()))
+        })
+        .collect())
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<()> {
     git_output(dir, args).map(|_| ())
 }

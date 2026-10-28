@@ -41,10 +41,7 @@ pub fn start_review(
         bail!("a review of {} is already running", mr.reference);
     }
 
-    let host = reqwest::Url::parse(&gitlab.url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_string))
-        .with_context(|| format!("cannot read the host of GitLab url {:?}", gitlab.url))?;
+    let host = gitlab.host()?;
     let clone = find_clone(&git.root_paths(), &host, &mr.project).with_context(|| {
         format!("no local clone of {host}/{} found under {}", mr.project, git.roots.join(", "))
     })?;
@@ -150,6 +147,7 @@ mod tests {
             author: "me".into(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: "https://gitlab.example.com/group/api/-/merge_requests/7".into(),
+            worktree: None,
         };
 
         let name = start_review(&gitlab, &git_config, &claude, &tmux, &mr).unwrap();
@@ -203,6 +201,7 @@ mod tests {
             author: String::new(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: String::new(),
+            worktree: None,
         };
 
         let err = start_review(&gitlab, &git_config, &ClaudeConfig::default(), &Tmux::with_socket(&socket), &mr)

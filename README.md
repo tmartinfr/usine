@@ -37,7 +37,7 @@ api_token = "..."                      # https://id.atlassian.com > Security > A
 token = "glpat-..."                    # personal access token, read_api scope
 # url = "https://gitlab.example.com"   # optional, defaults to https://gitlab.com
 
-[git]                                  # needed to review merge requests
+[git]                                  # needed to review merge requests and find their worktrees
 roots = ["~/git"]                      # where your local clones live (searched 3 levels deep)
 # worktrees_dir = "~/reviews"          # optional, defaults to ~/.local/share/usine/worktrees
 
@@ -67,7 +67,7 @@ usine tui
 The screen shows three panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
-- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting.
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting. The `WORKTREE` column shows the local worktree that has the source branch of the merge request checked out (see [Worktrees](#worktrees)).
 - **Review**: the live screen of the Claude review of the selected merge request.
 - **Notifications** (hidden by default, press `n` to show or hide it): the changes usine notified (see [Notifications](#notifications)), latest at the bottom, with their time. The last 500 are kept. Showing it moves the focus to it with the latest change selected; `Enter` opens the issue or merge request the change is about (for a finished review, its merge request when still listed).
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
@@ -81,9 +81,9 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 |PAY-123  In Progress  High      2026-10-10  Fix the payment retry loop        |
 +-----------------------------------------------------------------------------+
 + GitLab MRs (2) -------------------------------------------------------------+
-|R  ROLE ^    MR                    STATUS        PIPELINE  UPDATED     TITLE  |
-|*  author    group/backend/api!42  not_approved  running   2026-10-10  Add... |
-|   reviewer  group/web!310         mergeable     success   2026-10-09  Upd... |
+|R  ROLE ^    MR                    STATUS        PIPELINE  UPDATED     WORKTREE|
+|*  author    group/backend/api!42  not_approved  running   2026-10-10  ~/git...|
+|   reviewer  group/web!310         mergeable     success   2026-10-09  -       |
 +-----------------------------------------------------------------------------+
 + Review group/backend/api!42 [running]  a: attach ---------------------------+
 | * Reading the diff of group/backend/api!42...                               |
@@ -117,7 +117,7 @@ Press `w` to show each Jira issue next to its merge requests, and `w` again to s
 
 ```
 + Jira issues (3) -------------------------++ GitLab MRs (4) ---------------------------------------+
-|KEY      STATUS ^     SUMMARY             ||R  ROLE      MR                    STATUS        TITLE  |
+|KEY      STATUS ^     SUMMARY             ||R  ROLE      MR                    STATUS        WORK...|
 |PAY-123  In Progress  Fix the payment ... ||*  author    group/backend/api!42  not_approved  Add... |
 |                                          ||   author    group/backend/api!45  mergeable     Ret... |
 |OPS-7    To Do        Rotate staging c... ||                                                       |
@@ -153,7 +153,7 @@ From the split view, press `w` to show the issues and their merge requests in a 
 +--------------------------------------------------------------------------------------------------+
 ```
 
-- The merge requests share the issue columns: the merge request under `KEY`, its merge status under `STATUS`, its pipeline under `PRIORITY`, its last update under `UPDATED`, and its role then title under `SUMMARY`. Each group of merge requests starts with the names of their columns, showing the GitLab sort.
+- The merge requests share the issue columns: the merge request under `KEY`, its merge status under `STATUS`, its pipeline under `PRIORITY`, its last update under `UPDATED`, and its role, title and worktree under `SUMMARY`. Each group of merge requests starts with the names of their columns, showing the GitLab sort.
 - Merge requests are linked to issues as in the split view. A merge request mentioning several listed issues is shown below each of them.
 - The merge requests linked to none of the listed issues come last, below the `MRs of no listed issue` row.
 - `Enter` opens the issue or merge request of the selected row. `v`, `a` and `x` act on the selected merge request, which the Review pane follows.
@@ -293,12 +293,14 @@ usine gitlab mrs --json | jq -r '.[] | select(.draft | not) | .url'
 Table output:
 
 ```
-MR                    STATUS        PIPELINE  TARGET   UPDATED     TITLE
-group/backend/api!42  not_approved  running   main     2026-10-10  Add retry on payment webhook
-group/infra!7         draft_status  -         develop  2026-10-01  Draft: Bump dependencies
+MR                    STATUS        PIPELINE  TARGET   UPDATED     WORKTREE                           TITLE
+group/backend/api!42  not_approved  running   main     2026-10-10  ~/git/backend/api-webhook-retry    Add retry on payment webhook
+group/infra!7         draft_status  -         develop  2026-10-01  -                                  Draft: Bump dependencies
 ```
 
 `STATUS` is the merge status reported by GitLab (e.g. `mergeable`, `not_approved`, `draft_status`). It often shows `unchecked` until the merge request is opened in the GitLab web UI.
+
+`WORKTREE` is the local worktree that has the source branch of the merge request checked out, or `-` (see [Worktrees](#worktrees)).
 
 `PIPELINE` is the status of the latest pipeline of the merge request as reported by GitLab (e.g. `success`, `running`, `pending`, `manual`, `failed`, `canceled`), or `-` when it has none. Getting it takes one extra request per merge request.
 
@@ -320,11 +322,16 @@ JSON output (one object per merge request):
   "author": "me",
   "role": "author",
   "updated": "2026-10-10T12:34:56.789+00:00",
-  "url": "https://gitlab.com/group/backend/api/-/merge_requests/42"
+  "url": "https://gitlab.com/group/backend/api/-/merge_requests/42",
+  "worktree": "/home/me/git/backend/api-webhook-retry"
 }
 ```
 
-`pipeline` is `null` when the merge request has no pipeline. `description` is empty when the merge request has none. `role` is always `author` for this command.
+`worktree` is `null` when no worktree was found. `pipeline` is `null` when the merge request has no pipeline. `description` is empty when the merge request has none. `role` is always `author` for this command.
+
+### Worktrees
+
+With a `[git]` section, usine looks for the worktree of each merge request: it finds your local clone of the project under the `roots` (as for reviews), then picks the worktree of that clone, the clone itself included, that has the source branch of the merge request checked out. Worktrees in a detached state, such as the ones usine creates for reviews, are not matched. Without a `[git]` section, or when no clone or worktree is found, the worktree is empty. In the terminal interface, worktrees are looked up again at each refresh.
 
 ### Output and errors
 

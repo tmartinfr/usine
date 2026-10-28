@@ -5,7 +5,8 @@ use std::cmp::Ordering;
 use usine::model::{Issue, MergeRequest};
 
 pub const ISSUE_COLUMNS: [&str; 5] = ["KEY", "STATUS", "PRIORITY", "UPDATED", "SUMMARY"];
-pub const MR_COLUMNS: [&str; 7] = ["R", "ROLE", "MR", "STATUS", "PIPELINE", "UPDATED", "TITLE"];
+pub const MR_COLUMNS: [&str; 8] =
+    ["R", "ROLE", "MR", "STATUS", "PIPELINE", "UPDATED", "WORKTREE", "TITLE"];
 
 /// Jira issues by status, then most recently updated first (the source order).
 pub const ISSUE_DEFAULT_SORT: Sort = Sort { column: 1, descending: false };
@@ -62,6 +63,7 @@ pub fn compare_merge_requests(
         4 => (pipeline_rank(a.pipeline.as_deref()), &a.pipeline)
             .cmp(&(pipeline_rank(b.pipeline.as_deref()), &b.pipeline)),
         5 => a.updated.cmp(&b.updated),
+        6 => a.worktree.cmp(&b.worktree),
         _ => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
     }
 }

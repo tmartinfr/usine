@@ -1,5 +1,7 @@
 //! UI-agnostic domain types shared by all connectors.
 
+use std::path::PathBuf;
+
 use chrono::{DateTime, FixedOffset};
 use serde::Serialize;
 
@@ -62,4 +64,7 @@ pub struct MergeRequest {
     pub role: Role,
     pub updated: DateTime<FixedOffset>,
     pub url: String,
+    /// Local worktree with the source branch checked out, None when not found
+    /// or not looked up.
+    pub worktree: Option<PathBuf>,
 }
