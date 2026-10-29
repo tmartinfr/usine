@@ -64,11 +64,11 @@ usine
 usine tui
 ```
 
-The screen shows three panes, one above the other:
+The screen shows these panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
-- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting. The `WORKTREE` column shows the local worktree that has the source branch of the merge request checked out (see [Worktrees](#worktrees)), marked `*` when a Claude session started with `c` exists for it.
-- **Review**: the live screen of the Claude review of the selected merge request.
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting. The `C` column shows `*` when it has a Claude session started with `c` (see [Claude menu](#claude-menu)). The `WORKTREE` column shows the local worktree that has the source branch of the merge request checked out (see [Worktrees](#worktrees)).
+- **Review**: the live screen of the Claude review of the selected merge request, shown only while it has a review (or one is starting). When the merge request also has a Claude session started with `c`, the **Claude** pane shows its live screen next to it.
 - **Notifications** (hidden by default, press `n` to show or hide it): the changes usine notified (see [Notifications](#notifications)), latest at the bottom, with their time. The last 500 are kept. Showing it moves the focus to it with the latest change selected; `Enter` opens the issue or merge request the change is about (for a finished review, its merge request when still listed).
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
 
@@ -81,13 +81,13 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 |PAY-123  In Progress  High      2026-10-10  Fix the payment retry loop        |
 +-----------------------------------------------------------------------------+
 + GitLab MRs (2) -------------------------------------------------------------+
-|R  ROLE ^    MR                    STATUS        PIPELINE  UPDATED     WORKTREE|
-|*  author    group/backend/api!42  not_approved  running   2026-10-10  ~/git...|
-|   reviewer  group/web!310         mergeable     success   2026-10-09  -       |
+|R  C  ROLE ^    MR                    STATUS        PIPELINE  UPDATED     ...|
+|*  *  author    group/backend/api!42  not_approved  running   2026-10-10  ...|
+|      reviewer  group/web!310         mergeable     success   2026-10-09  -  |
 +-----------------------------------------------------------------------------+
-+ Review group/backend/api!42 [running]  a: attach ---------------------------+
-| * Reading the diff of group/backend/api!42...                               |
-+-----------------------------------------------------------------------------+
++ Review group/backend/api!42 [running] ++ Claude [running]  c: attach --------+
+|* Reading the diff...                 ||> Fix the retry loop                 |
++--------------------------------------++-------------------------------------+
  Tab: switch  j/k: move  Enter: open  s: sort  r: refresh  a: attach  x: close  c: claude  w: view  n: notifs  l: calls  q: quit
 ```
 
@@ -117,12 +117,12 @@ Press `w` to show each Jira issue next to its merge requests, and `w` again to s
 
 ```
 + Jira issues (3) -------------------------++ GitLab MRs (4) ---------------------------------------+
-|KEY      STATUS ^     SUMMARY             ||R  ROLE      MR                    STATUS        WORK...|
-|PAY-123  In Progress  Fix the payment ... ||*  author    group/backend/api!42  not_approved  Add... |
-|                                          ||   author    group/backend/api!45  mergeable     Ret... |
+|KEY      STATUS ^     SUMMARY             ||R  C  ROLE      MR                    STATUS      ...|
+|PAY-123  In Progress  Fix the payment ... ||*  *  author    group/backend/api!42  not_approved...|
+|                                          ||      author    group/backend/api!45  mergeable   ...|
 |OPS-7    To Do        Rotate staging c... ||                                                       |
-|PAY-130  Testing      Drop unused fiel... ||   reviewer  group/web!310         mergeable     Rem... |
-|                                          ||   author    group/infra!7         draft_status  Dra... |
+|PAY-130  Testing      Drop unused fiel... ||      reviewer  group/web!310         mergeable   ...|
+|                                          ||      author    group/infra!7         draft_status...|
 +------------------------------------------++-------------------------------------------------------+
 ```
 
@@ -138,18 +138,18 @@ From the split view, press `w` to show the issues and their merge requests in a 
 
 ```
 + Jira issues (3)  GitLab MRs (4) -----------------------------------------------------------------+
-|KEY                        STATUS ^      PRIORITY  UPDATED     SUMMARY                            |
-|PAY-123                    In Progress   High      2026-10-10  Fix the payment retry loop         |
-|   R MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                    |
-||- * group/backend/api!42  not_approved  running   2026-10-10  author    Add retry on payment ... |
-|`-   group/backend/api!45  mergeable     success   2026-10-09  author    Retry the refunds too    |
-|OPS-7                      To Do         -         2026-10-01  Rotate staging certificates        |
-|PAY-130                    Testing       Medium    2026-10-08  Drop unused fields                 |
-|   R MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                    |
-|`-   group/web!310         mergeable     success   2026-10-07  reviewer  Remove the old fields    |
+|KEY                          STATUS ^      PRIORITY  UPDATED     SUMMARY                          |
+|PAY-123                      In Progress   High      2026-10-10  Fix the payment retry loop       |
+|   R C MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                  |
+||- * * group/backend/api!42  not_approved  running   2026-10-10  author    Add retry on payment ...|
+|`-     group/backend/api!45  mergeable     success   2026-10-09  author    Retry the refunds too  |
+|OPS-7                        To Do         -         2026-10-01  Rotate staging certificates      |
+|PAY-130                      Testing       Medium    2026-10-08  Drop unused fields               |
+|   R C MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                  |
+|`-     group/web!310         mergeable     success   2026-10-07  reviewer  Remove the old fields  |
 |MRs of no listed issue                                                                            |
-|   R MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                    |
-|`-   group/infra!7         draft_status  -         2026-10-02  author    Draft: bump the base ... |
+|   R C MR                    STATUS        PIPELINE  UPDATED     ROLE ^    TITLE                  |
+|`-     group/infra!7         draft_status  -         2026-10-02  author    Draft: bump the base ...|
 +--------------------------------------------------------------------------------------------------+
 ```
 
@@ -185,9 +185,9 @@ Colors help scanning the panes:
 - Pipeline: green when passed, yellow while running or waiting (pending, manual...), red when failed, grey when canceled or skipped.
 - Role: `reviewer` is highlighted in light blue, `author` is greyed out.
 - Review marker: green while Claude is running, blue once finished, yellow while starting.
-- Worktree: `*` before the path when Claude was started in it with `c`: green while its session runs, blue once Claude exited. Without session, the path is greyed out.
+- Claude marker (`C` column): green while the session started with `c` runs, blue once Claude exited.
 - Dates of the last 24 hours are highlighted, older ones are greyed out.
-- The Review pane keeps the colors of the Claude session.
+- The Review and Claude panes keep the colors of the Claude session.
 - Messages at the bottom are green (done), yellow (nothing done, e.g. a review already exists) or red (error).
 
 #### Notifications
@@ -236,7 +236,7 @@ Move with `j` / `k` and press `Enter`, or press `1`, `2` or `3`. `Esc` closes th
 2. **Resume a conversation** lists the Claude Code conversations of that worktree, most recent first, with the name given to them (`--name` or `/rename`), else the title Claude generated, else their first prompt. `Enter` resumes the selected one in a tmux session as above; `Esc` goes back to the menu.
 3. **Review with Claude** starts a review (see [Reviewing a merge request with Claude](#reviewing-a-merge-request-with-claude)). It does not need a worktree.
 
-New and resumed sessions need a worktree: without one, the first two entries show a warning. One such session runs per merge request: while it runs, `c` attaches to it directly instead of opening the menu; once Claude has exited, the menu opens again and the next session replaces it. The `WORKTREE` column marks the path with `*`, green while the session runs and blue once Claude exited. These sessions keep running when you quit usine. They do not appear in the Review pane.
+New and resumed sessions need a worktree: without one, the first two entries show a warning. One such session runs per merge request: while it runs, `c` attaches to it directly instead of opening the menu; once Claude has exited, the menu opens again and the next session replaces it. The `C` column shows `*`, green while the session runs and blue once Claude exited, and the Claude pane, next to the Review pane, shows its live screen (its title says `c: attach` while Claude runs, `c: menu` once it exited). These sessions keep running when you quit usine.
 
 ### Jira: list issues
 

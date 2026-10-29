@@ -5,13 +5,13 @@ use std::cmp::Ordering;
 use usine::model::{Issue, MergeRequest};
 
 pub const ISSUE_COLUMNS: [&str; 5] = ["KEY", "STATUS", "PRIORITY", "UPDATED", "SUMMARY"];
-pub const MR_COLUMNS: [&str; 8] =
-    ["R", "ROLE", "MR", "STATUS", "PIPELINE", "UPDATED", "WORKTREE", "TITLE"];
+pub const MR_COLUMNS: [&str; 9] =
+    ["R", "C", "ROLE", "MR", "STATUS", "PIPELINE", "UPDATED", "WORKTREE", "TITLE"];
 
 /// Jira issues by status, then most recently updated first (the source order).
 pub const ISSUE_DEFAULT_SORT: Sort = Sort { column: 1, descending: false };
 /// Authored merge requests first, then most recently updated first.
-pub const MR_DEFAULT_SORT: Sort = Sort { column: 1, descending: false };
+pub const MR_DEFAULT_SORT: Sort = Sort { column: 2, descending: false };
 
 /// Column a pane is sorted on, as an index into its columns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,8 @@ impl Sort {
     }
 }
 
-/// Review state of a merge request, in ascending sort order.
+/// State of the review, or of the Claude session, of a merge request, in
+/// ascending sort order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReviewState {
     Running,
@@ -53,17 +54,19 @@ pub fn compare_merge_requests(
     b: &MergeRequest,
     column: usize,
     review: impl Fn(&MergeRequest) -> ReviewState,
+    claude: impl Fn(&MergeRequest) -> ReviewState,
 ) -> Ordering {
     match column {
         0 => review(a).cmp(&review(b)),
-        1 => a.role.cmp(&b.role),
-        2 => (a.project.to_lowercase(), a.iid).cmp(&(b.project.to_lowercase(), b.iid)),
-        3 => (merge_readiness(&a.merge_status), &a.merge_status)
+        1 => claude(a).cmp(&claude(b)),
+        2 => a.role.cmp(&b.role),
+        3 => (a.project.to_lowercase(), a.iid).cmp(&(b.project.to_lowercase(), b.iid)),
+        4 => (merge_readiness(&a.merge_status), &a.merge_status)
             .cmp(&(merge_readiness(&b.merge_status), &b.merge_status)),
-        4 => (pipeline_rank(a.pipeline.as_deref()), &a.pipeline)
+        5 => (pipeline_rank(a.pipeline.as_deref()), &a.pipeline)
             .cmp(&(pipeline_rank(b.pipeline.as_deref()), &b.pipeline)),
-        5 => a.updated.cmp(&b.updated),
-        6 => a.worktree.cmp(&b.worktree),
+        6 => a.updated.cmp(&b.updated),
+        7 => a.worktree.cmp(&b.worktree),
         _ => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
     }
 }
@@ -159,11 +162,11 @@ mod tests {
         let mut mrs = vec![blocked, waiting, ready];
         let iids = |mrs: &[MergeRequest]| mrs.iter().map(|m| m.iid).collect::<Vec<_>>();
 
-        mrs.sort_by(|a, b| compare_merge_requests(a, b, 3, |_| ReviewState::Absent));
+        mrs.sort_by(|a, b| compare_merge_requests(a, b, 4, |_| ReviewState::Absent, |_| ReviewState::Absent));
         assert_eq!(iids(&mrs), [3, 2, 1]);
 
-        let sort = Sort { column: 5, descending: true };
-        mrs.sort_by(|a, b| sort.apply(compare_merge_requests(a, b, 5, |_| ReviewState::Absent)));
+        let sort = Sort { column: 6, descending: true };
+        mrs.sort_by(|a, b| sort.apply(compare_merge_requests(a, b, 6, |_| ReviewState::Absent, |_| ReviewState::Absent)));
         assert_eq!(iids(&mrs), [3, 1, 2]);
     }
 
@@ -180,7 +183,7 @@ mod tests {
             with_pipeline(4, Some("running")),
             with_pipeline(5, Some("success")),
         ];
-        mrs.sort_by(|a, b| compare_merge_requests(a, b, 4, |_| ReviewState::Absent));
+        mrs.sort_by(|a, b| compare_merge_requests(a, b, 5, |_| ReviewState::Absent, |_| ReviewState::Absent));
         let iids: Vec<u64> = mrs.iter().map(|m| m.iid).collect();
         assert_eq!(iids, [5, 4, 2, 3, 1]);
     }
@@ -188,7 +191,7 @@ mod tests {
     #[test]
     fn merge_requests_sort_by_role() {
         let mut mrs = [MergeRequest { role: Role::Reviewer, ..mr(1) }, mr(2)];
-        mrs.sort_by(|a, b| compare_merge_requests(a, b, 1, |_| ReviewState::Absent));
+        mrs.sort_by(|a, b| compare_merge_requests(a, b, 2, |_| ReviewState::Absent, |_| ReviewState::Absent));
         assert_eq!(mrs.map(|m| m.iid), [2, 1]);
     }
 }

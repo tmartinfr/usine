@@ -11,7 +11,9 @@ use usine::config::display_path;
 use usine::connectors::claude::Session;
 use usine::model::{Issue, MergeRequest, Role, StatusCategory};
 
-use super::app::{App, Content, Focus, Item, Level, MENU_ENTRIES, Menu, Pane, View, review_state};
+use super::app::{
+    App, Content, Focus, Item, Level, MENU_ENTRIES, Menu, Pane, View, claude_state, review_state,
+};
 use super::sort::{
     ISSUE_COLUMNS, MR_COLUMNS, ReviewState, Sort, merge_readiness, pipeline_rank, priority_rank,
 };
@@ -28,16 +30,20 @@ const MR_HEADER: Color = Color::Indexed(208);
 type Styled = (String, Style);
 
 /// Columns of the MRs in the split view, as indexes into `MR_COLUMNS`.
-const SPLIT_MR_CELLS: [usize; 7] = [0, 1, 2, 3, 4, 6, 7];
+const SPLIT_MR_CELLS: [usize; 8] = [0, 1, 2, 3, 4, 5, 7, 8];
 /// Row of the tree view above the MRs of no listed issue.
 const OTHER_MRS: &str = "MRs of no listed issue";
 /// Width of the role of the MRs in the tree view, so that their titles line up.
 const TREE_ROLE_WIDTH: usize = 10;
 
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let review_height = match app.selected_review() {
-        Some(_) => Constraint::Fill(2),
-        None => Constraint::Length(3),
+    // The bottom panes show the sessions of the selected MR, if any.
+    let starting = app.selected_mr().is_some_and(|mr| app.starting.contains(&mr.reference));
+    let review = starting || app.selected_review().is_some();
+    let review_height = match (app.selected_review(), app.selected_claude()) {
+        (None, None) if starting => Constraint::Length(3),
+        (None, None) => Constraint::Length(0),
+        _ => Constraint::Fill(2),
     };
     let calls_height = if app.show_calls { Constraint::Fill(1) } else { Constraint::Length(0) };
     let notifications_height =
@@ -62,7 +68,17 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         View::Split => render_split(frame, top, app),
         View::Tree => render_tree(frame, top, app),
     }
-    render_review(frame, bottom, app);
+    match (review, app.selected_claude()) {
+        (true, Some(session)) => {
+            let [left, right] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(bottom);
+            render_review(frame, left, app);
+            render_claude(frame, right, app, session);
+        }
+        (true, None) => render_review(frame, bottom, app),
+        (false, Some(session)) => render_claude(frame, bottom, app, session),
+        (false, None) => {}
+    }
     if app.show_notifications {
         render_notifications(frame, notifications, app);
     }
@@ -288,7 +304,7 @@ fn tree_mr_row(
     starting: &[String],
     claude: &[Session],
 ) -> Vec<Line<'static>> {
-    let [marker, role, reference, status, pipeline, updated, worktree, title] =
+    let [marker, claude, role, reference, status, pipeline, updated, worktree, title] =
         merge_request_row(mr, reviews, starting, claude).try_into().expect("a cell per MR column");
     let span = |(text, style): Styled| Span::styled(text, style);
     let branch = if last { "└─ " } else { "├─ " };
@@ -297,6 +313,8 @@ fn tree_mr_row(
         Line::from(vec![
             Span::styled(branch, Style::new().fg(MUTED)),
             span(marker),
+            Span::raw(" "),
+            span(claude),
             Span::raw(" "),
             span(reference),
         ]),
@@ -311,13 +329,20 @@ fn tree_mr_row(
 /// Names of the MR columns of the tree view, laid out as `tree_mr_row`, with
 /// the sort of the MRs.
 fn tree_mr_header(sort: Option<Sort>) -> Vec<Line<'static>> {
-    let [marker, role, reference, status, pipeline, updated, worktree, title] =
+    let [marker, claude, role, reference, status, pipeline, updated, worktree, title] =
         header_labels(&MR_COLUMNS, sort).try_into().expect("a label per MR column");
     let label = |text: String| Span::styled(text, Style::new().fg(MR_HEADER).underlined());
     // The padding of the role is not underlined.
     let padding = " ".repeat(TREE_ROLE_WIDTH.saturating_sub(role.chars().count()));
     vec![
-        Line::from(vec![Span::raw("   "), label(marker), Span::raw(" "), label(reference)]),
+        Line::from(vec![
+            Span::raw("   "),
+            label(marker),
+            Span::raw(" "),
+            label(claude),
+            Span::raw(" "),
+            label(reference),
+        ]),
         Line::from(label(status)),
         Line::from(label(pipeline)),
         Line::from(label(updated)),
@@ -347,15 +372,15 @@ struct PaneView<'a, T> {
     config_path: &'a str,
 }
 
-/// Cells of `MR_COLUMNS`.
-/// Cells of `mr`, one per MR column. `claude`: sessions running Claude in a worktree.
+/// Cells of `mr`, one per column of `MR_COLUMNS`. `claude`: sessions running
+/// Claude in a worktree.
 fn merge_request_row(
     mr: &MergeRequest,
     reviews: &[Session],
     starting: &[String],
     claude: &[Session],
 ) -> Vec<Styled> {
-    let marker = match review_state(reviews, starting, mr) {
+    let marker = |state| match state {
         ReviewState::Starting => ("~".to_string(), Style::new().fg(Color::Yellow).bold()),
         ReviewState::Finished => ("*".to_string(), Style::new().fg(Color::Blue).bold()),
         ReviewState::Running => ("*".to_string(), Style::new().fg(Color::Green).bold()),
@@ -367,29 +392,16 @@ fn merge_request_row(
         Role::Reviewer => ("reviewer".to_string(), Style::new().fg(Color::LightBlue)),
     };
     vec![
-        marker,
+        marker(review_state(reviews, starting, mr)),
+        marker(claude_state(claude, mr)),
         role,
         (mr.reference.clone(), Style::new().bold()),
         (mr.merge_status.clone(), Style::new().fg(merge_status_color(&mr.merge_status))),
         pipeline_cell(mr.pipeline.as_deref()),
         updated_cell(mr.updated),
-        worktree_cell(mr, claude),
+        (display_path(mr.worktree.as_deref()), Style::new().fg(MUTED)),
         (mr.title.clone(), title_style),
     ]
-}
-
-/// Worktree of `mr`, marked `*` when Claude was started in it: green while it
-/// runs, blue once it exited.
-fn worktree_cell(mr: &MergeRequest, claude: &[Session]) -> Styled {
-    let path = display_path(mr.worktree.as_deref());
-    if mr.worktree.is_none() {
-        return (path, Style::new().fg(MUTED));
-    }
-    match claude.iter().find(|s| s.subject == mr.reference) {
-        Some(session) if session.finished => (format!("* {path}"), Style::new().fg(Color::Blue)),
-        Some(_) => (format!("* {path}"), Style::new().fg(Color::Green)),
-        None => (format!("  {path}"), Style::new().fg(MUTED)),
-    }
 }
 
 fn issue_row(issue: &Issue) -> Vec<Styled> {
@@ -564,49 +576,55 @@ fn header_labels(columns: &[&str], sort: Option<Sort>) -> Vec<String> {
 }
 
 /// Live view of the review session of the selected MR.
+/// Review of the selected MR, running, finished or starting.
 fn render_review(frame: &mut Frame, area: Rect, app: &App) {
     let title_style = Style::new().fg(CLAUDE).bold();
-    let Some(mr) = app.selected_mr() else {
-        let block = pane_block(vec![Span::styled(" Review ", title_style)], MUTED);
-        let text = Line::from("No merge request selected.").fg(MUTED);
-        frame.render_widget(Paragraph::new(text).block(block), area);
-        return;
-    };
+    let Some(mr) = app.selected_mr() else { return };
     let mut title = vec![
         Span::styled(" Review ", title_style),
         Span::styled(format!("{} ", mr.reference), Style::new().bold()),
     ];
     let Some(review) = app.selected_review() else {
-        let text = if app.starting.contains(&mr.reference) {
-            title.push(Span::styled("[starting] ", Style::new().fg(Color::Yellow)));
-            Line::from("Preparing the worktree and starting Claude...").fg(Color::Yellow)
-        } else {
-            Line::from(vec![
-                Span::raw("No review for this MR. Press "),
-                Span::styled("v", Style::new().fg(ACCENT).bold()),
-                Span::raw(" to start one."),
-            ])
-            .fg(MUTED)
-        };
+        title.push(Span::styled("[starting] ", Style::new().fg(Color::Yellow)));
+        let text = Line::from("Preparing the worktree and starting Claude...").fg(Color::Yellow);
         frame.render_widget(Paragraph::new(text).block(pane_block(title, MUTED)), area);
         return;
     };
 
-    if review.finished {
-        title.push(Span::styled("[finished] ", Style::new().fg(Color::Blue).bold()));
-    } else {
-        title.push(Span::styled("[running] ", Style::new().fg(Color::Green).bold()));
-    }
+    title.push(session_state(review));
     title.extend([
         Span::styled(" a", Style::new().fg(ACCENT).bold()),
         Span::styled(": attach ", Style::new().fg(MUTED)),
     ]);
-    let block = pane_block(title, CLAUDE);
+    render_preview(frame, area, pane_block(title, CLAUDE), app.preview_of(&review.name));
+}
+
+/// Live screen of the Claude session started with `c` on the selected MR.
+fn render_claude(frame: &mut Frame, area: Rect, app: &App, session: &Session) {
+    let mut title = vec![Span::styled(" Claude ", Style::new().fg(CLAUDE).bold())];
+    title.push(session_state(session));
+    // Once Claude exited, `c` opens the menu again.
+    let action = if session.finished { ": menu " } else { ": attach " };
+    title.extend([
+        Span::styled(" c", Style::new().fg(ACCENT).bold()),
+        Span::styled(action, Style::new().fg(MUTED)),
+    ]);
+    render_preview(frame, area, pane_block(title, CLAUDE), app.preview_of(&session.name));
+}
+
+fn session_state(session: &Session) -> Span<'static> {
+    match session.finished {
+        true => Span::styled("[finished] ", Style::new().fg(Color::Blue).bold()),
+        false => Span::styled("[running] ", Style::new().fg(Color::Green).bold()),
+    }
+}
+
+/// End of a captured session screen, like a terminal would show it.
+fn render_preview(frame: &mut Frame, area: Rect, block: Block, raw: Option<&str>) {
+    let raw = raw.unwrap_or("");
     let inner_height = area.height.saturating_sub(2) as usize;
-    let raw = app.preview_of(&review.name).unwrap_or("");
     // The preview keeps Claude's colors; unparsable output falls back to plain text.
     let text = raw.into_text().unwrap_or_else(|_| Text::raw(raw));
-    // Show the end of the session screen, like a terminal would.
     let skip = text.lines.len().saturating_sub(inner_height);
     let lines: Vec<Line> = text.lines.into_iter().skip(skip).collect();
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -799,15 +817,17 @@ mod tests {
         let screen = draw(&mut app);
 
         assert!(screen.contains("Jira issues (2)"), "{screen}");
-        assert!(screen.contains("WORKTREE         TITLE"), "{screen}");
-        assert!(screen.contains("  /srv/api-feat  MR 42"), "{screen}");
+        assert!(screen.contains("R  C  ROLE ^  MR"), "{screen}");
+        assert!(screen.contains("WORKTREE       TITLE"), "{screen}");
+        assert!(screen.contains("/srv/api-feat  MR 42"), "{screen}");
 
         let claude = |finished| Session { name: "c".into(), subject: "group/project!42".into(), finished };
         app.on_msg(Msg::ClaudeSessions(vec![claude(false)]));
+        // The C column marks the Claude session.
         let buffer = draw_buffer(&mut app);
-        assert_eq!(style_of(&buffer, "* /srv/api-feat").fg, Some(Color::Green));
+        assert_eq!(style_of(&buffer, "*  author  group/project!42").fg, Some(Color::Green));
         app.on_msg(Msg::ClaudeSessions(vec![claude(true)]));
-        assert_eq!(style_of(&draw_buffer(&mut app), "* /srv/api-feat").fg, Some(Color::Blue));
+        assert_eq!(style_of(&draw_buffer(&mut app), "*  author  group/project!42").fg, Some(Color::Blue));
         assert!(screen.contains("GitLab MRs (1)"), "{screen}");
         assert!(screen.contains("KEY    STATUS ^  PRIORITY  UPDATED     SUMMARY"), "{screen}");
         assert!(screen.contains("PAY-2  To Do     -         2026-10-10  Summary of PAY-2"), "{screen}");
@@ -851,10 +871,33 @@ mod tests {
 
         let screen = draw(&mut app);
         assert!(screen.contains("Review group/project!1 [running]"), "{screen}");
-        assert!(screen.contains("*  author  group/project!1"), "{screen}");
+        assert!(screen.contains("*     author  group/project!1"), "{screen}");
         // The end of the session screen is shown.
         assert!(screen.contains("claude line 40"), "{screen}");
         assert!(!screen.contains("claude line 1 "), "{screen}");
+    }
+
+    #[test]
+    fn claude_pane_is_next_to_the_review_while_the_mr_has_a_session() {
+        let mut app = App::new(false, true, "config.toml".into());
+        app.on_msg(Msg::Gitlab(Ok(vec![mr(1), mr(2)])));
+        assert!(!draw(&mut app).contains(" Claude "));
+
+        let claude = |finished| Session { name: "usine-claude-1".into(), subject: mr(1).reference, finished };
+        app.on_msg(Msg::ClaudeSessions(vec![claude(false)]));
+        app.on_msg(Msg::Preview { session: "usine-claude-1".into(), text: "working on it".into() });
+        let screen = draw(&mut app);
+        assert!(!screen.contains("Review"), "{screen}");
+        assert!(screen.contains("Claude [running]  c: attach"), "{screen}");
+        assert!(screen.contains("working on it"), "{screen}");
+
+        app.on_msg(Msg::ClaudeSessions(vec![claude(true)]));
+        assert!(draw(&mut app).contains("Claude [finished]  c: menu"));
+
+        // Another MR: no session, no Claude pane.
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert!(!draw(&mut app).contains("working on it"));
     }
 
     #[test]
@@ -862,11 +905,11 @@ mod tests {
         let mut app = App::new(false, true, "config.toml".into());
         app.on_msg(Msg::Gitlab(Ok(vec![mr(1)])));
         let screen = draw(&mut app);
-        assert!(screen.contains("No review for this MR. Press v to start one."), "{screen}");
+        assert!(!screen.contains("Review"), "{screen}");
 
         app.starting.push("group/project!1".into());
         let screen = draw(&mut app);
-        assert!(screen.contains("~  author  group/project!1"), "{screen}");
+        assert!(screen.contains("~     author  group/project!1"), "{screen}");
         assert!(screen.contains("Preparing the worktree"), "{screen}");
     }
 
@@ -898,8 +941,8 @@ mod tests {
         assert_eq!(style_of(&buffer, "failed").fg, Some(Color::Red));
         assert_eq!(style_of(&buffer, "Draft: wip").fg, Some(MUTED));
         assert_eq!(style_of(&buffer, "reviewer").fg, Some(Color::LightBlue));
-        assert_eq!(style_of(&buffer, "*  author    group/project!1").fg, Some(Color::Green));
-        assert_eq!(style_of(&buffer, "*  author    group/project!2").fg, Some(Color::Blue));
+        assert_eq!(style_of(&buffer, "*     author    group/project!1").fg, Some(Color::Green));
+        assert_eq!(style_of(&buffer, "*     author    group/project!2").fg, Some(Color::Blue));
         assert_eq!(style_of(&buffer, "KEY").fg, Some(Color::Yellow));
         // Focused pane title uses the accent color.
         assert_eq!(style_of(&buffer, "Jira issues").fg, Some(ACCENT));
@@ -990,8 +1033,8 @@ mod tests {
         // MRs follow their issue on branches; issues stay at the left edge.
         assert!(lines[row("PAY-1 ")].starts_with("│PAY-1 "), "{screen}");
         assert_eq!(row("group/project!1"), row("PAY-1 ") + 2, "{screen}");
-        assert!(lines[row("group/project!1")].starts_with("│├─   group/project!1"), "{screen}");
-        assert!(lines[row("group/project!3")].starts_with("│└─   group/project!3"), "{screen}");
+        assert!(lines[row("group/project!1")].starts_with("│├─     group/project!1"), "{screen}");
+        assert!(lines[row("group/project!3")].starts_with("│└─     group/project!3"), "{screen}");
         // MR cells line up with the issue columns.
         assert_eq!(column("group/project!1", "mergeable"), column("PAY-1 ", "To Do"), "{screen}");
         assert_eq!(column("group/project!1", "author"), column("PAY-1 ", "Summary"), "{screen}");

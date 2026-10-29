@@ -96,18 +96,18 @@ impl Sources {
         }
     }
 
-    /// Lists review sessions and captures the screen of `selected`.
-    fn poll_reviews(&self, selected: Option<String>, tx: &UnboundedSender<Msg>) {
+    /// Lists Claude sessions and captures the screen of the `selected` ones.
+    fn poll_reviews(&self, selected: Vec<String>, tx: &UnboundedSender<Msg>) {
         let (tmux, tx) = (self.tmux.clone(), tx.clone());
         tokio::task::spawn_blocking(move || {
             // tmux missing or failing: no review to show.
             let _ = tx.send(Msg::Reviews(review::list_reviews(&tmux).unwrap_or_default()));
             let sessions = review::list_claude_sessions(&tmux).unwrap_or_default();
             let _ = tx.send(Msg::ClaudeSessions(sessions));
-            if let Some(session) = selected
-                && let Ok(text) = tmux.capture(&session, true)
-            {
-                let _ = tx.send(Msg::Preview { session, text });
+            for session in selected {
+                if let Ok(text) = tmux.capture(&session, true) {
+                    let _ = tx.send(Msg::Preview { session, text });
+                }
             }
         });
     }
@@ -199,7 +199,8 @@ fn event_loop(
         }
         if sources.gitlab.is_some() && last_poll.is_none_or(|t| t.elapsed() >= REVIEW_POLL) {
             last_poll = Some(Instant::now());
-            sources.poll_reviews(app.selected_review().map(|s| s.name.clone()), tx);
+            let selected = [app.selected_review(), app.selected_claude()];
+            sources.poll_reviews(selected.into_iter().flatten().map(|s| s.name.clone()).collect(), tx);
         }
         terminal.draw(|frame| ui::render(frame, app))?;
 

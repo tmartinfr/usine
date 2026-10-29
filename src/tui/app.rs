@@ -1,6 +1,7 @@
 //! TUI state and key handling, independent from the terminal.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 use chrono::{DateTime, Local};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -180,6 +181,15 @@ pub type LinkedRow = (Option<usize>, Option<usize>);
 /// URLs of the issue and MR of the selected row of the split or tree view.
 type LinkedSelection = Option<(Option<String>, Option<String>)>;
 
+/// State of the Claude session started with `c` on `mr` (never `Starting`).
+pub fn claude_state(sessions: &[Session], mr: &MergeRequest) -> ReviewState {
+    match sessions.iter().find(|s| s.subject == mr.reference) {
+        Some(session) if session.finished => ReviewState::Finished,
+        Some(_) => ReviewState::Running,
+        None => ReviewState::Absent,
+    }
+}
+
 /// Review state of `mr`, given the review sessions and the reviews being set up.
 pub fn review_state(reviews: &[Session], starting: &[String], mr: &MergeRequest) -> ReviewState {
     if starting.contains(&mr.reference) {
@@ -264,8 +274,8 @@ pub struct App {
     pub claude_sessions: Vec<Session>,
     /// Menu opened by `c`.
     pub menu: Option<Menu>,
-    /// Last captured screen of a review session: (session name, text).
-    pub preview: Option<(String, String)>,
+    /// Last captured screen of the Claude sessions, by session name.
+    pub previews: HashMap<String, String>,
     /// Column being chosen to sort the focused pane on.
     pub sorting: Option<usize>,
     /// `q` was pressed, waiting for confirmation.
@@ -303,7 +313,7 @@ impl App {
             starting: Vec::new(),
             claude_sessions: Vec::new(),
             menu: None,
-            preview: None,
+            previews: HashMap::new(),
             sorting: None,
             confirm_quit: false,
             api_log: ApiLog::default(),
@@ -348,12 +358,15 @@ impl App {
         self.review_of(&self.selected_mr()?.reference)
     }
 
+    /// Session running Claude in the worktree of the selected MR.
+    pub fn selected_claude(&self) -> Option<&Session> {
+        let mr = self.selected_mr()?;
+        self.claude_sessions.iter().find(|s| s.subject == mr.reference)
+    }
+
     /// Captured screen of `session`, if any.
     pub fn preview_of(&self, session: &str) -> Option<&str> {
-        match &self.preview {
-            Some((name, text)) if name == session => Some(text),
-            _ => None,
-        }
+        self.previews.get(session).map(String::as_str)
     }
 
     pub fn on_msg(&mut self, msg: Msg) {
@@ -385,7 +398,9 @@ impl App {
                 self.reviews = reviews;
             }
             Msg::ClaudeSessions(sessions) => self.claude_sessions = sessions,
-            Msg::Preview { session, text } => self.preview = Some((session, text)),
+            Msg::Preview { session, text } => {
+                self.previews.insert(session, text);
+            }
             Msg::ReviewStarted { mr, result } => {
                 self.starting.retain(|r| *r != mr);
                 match result {
@@ -678,9 +693,10 @@ impl App {
 
     fn sort_panes(&mut self) {
         self.jira.sort_items(compare_issues);
-        let (reviews, starting) = (&self.reviews, &self.starting);
+        let (reviews, starting, claude) = (&self.reviews, &self.starting, &self.claude_sessions);
         self.gitlab.sort_items(|a, b, column| {
-            compare_merge_requests(a, b, column, |mr| review_state(reviews, starting, mr))
+            let review = |mr: &MergeRequest| review_state(reviews, starting, mr);
+            compare_merge_requests(a, b, column, review, |mr| claude_state(claude, mr))
         });
     }
 
@@ -1095,6 +1111,7 @@ pub mod tests {
         let mut app = loaded_app();
         app.on_key(key(KeyCode::Tab));
         app.on_key(key(KeyCode::Char('s')));
+        app.on_key(key(KeyCode::Char('h')));
         app.on_key(key(KeyCode::Char('h')));
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.gitlab.sort, Some(Sort { column: 0, descending: false }));
