@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Deserialize;
 
 /// `[jira]` section of `config.toml`.
@@ -9,6 +11,10 @@ pub struct JiraConfig {
     pub api_token: String,
     /// Overrides `DEFAULT_JQL` when set.
     pub jql: Option<String>,
+    /// Color of a status in the terminal interface, by status name, e.g.
+    /// `"Dev Done" = "green"`. Other statuses are colored by category.
+    #[serde(default)]
+    pub status_colors: HashMap<String, String>,
 }
 
 impl JiraConfig {
@@ -38,6 +44,7 @@ mod tests {
         assert_eq!(jira.email, "me@example.com");
         assert_eq!(jira.api_token, "secret");
         assert!(jira.jql.is_none());
+        assert!(jira.status_colors.is_empty());
         assert_eq!(jira.effective_jql(), crate::connectors::jira::DEFAULT_JQL);
     }
 
@@ -50,10 +57,13 @@ mod tests {
             email = "me@example.com"
             api_token = "secret"
             jql = "project = PAY"
+            status_colors = { "Dev Done" = "green" }
             "#,
         )
         .unwrap();
-        assert_eq!(config.jira.unwrap().effective_jql(), "project = PAY");
+        let jira = config.jira.unwrap();
+        assert_eq!(jira.effective_jql(), "project = PAY");
+        assert_eq!(jira.status_colors["Dev Done"], "green");
     }
 
     #[test]

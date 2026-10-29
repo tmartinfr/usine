@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Local};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::style::Color;
 use ratatui::widgets::TableState;
 use usine::api_log::ApiLog;
 use usine::connectors::claude::{Conversation, Session};
@@ -264,6 +265,8 @@ pub struct App {
     pub gitlab: Pane<MergeRequest>,
     pub focus: Focus,
     pub config_path: String,
+    /// Colors of Jira statuses by lowercase name, over those of their category.
+    pub status_colors: HashMap<String, Color>,
     pub last_update: Option<DateTime<Local>>,
     pub message: Option<Notice>,
     /// Review sessions, running or finished; `subject` is the MR reference.
@@ -307,6 +310,7 @@ impl App {
             gitlab: Pane::new(gitlab_configured, MR_DEFAULT_SORT),
             focus: Focus::Jira,
             config_path,
+            status_colors: HashMap::new(),
             last_update: None,
             message: None,
             reviews: Vec::new(),

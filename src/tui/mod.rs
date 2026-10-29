@@ -167,6 +167,12 @@ pub fn run(config: Config, config_path: &Path) -> Result<()> {
         config_path.display().to_string(),
     );
     app.api_log = api_log;
+    for (status, color) in config.jira.iter().flat_map(|jira| &jira.status_colors) {
+        let Ok(parsed) = color.parse() else {
+            bail!("[jira] status_colors: unknown color {color:?} for {status:?}");
+        };
+        app.status_colors.insert(status.to_lowercase(), parsed);
+    }
     let (tx, rx) = unbounded_channel();
 
     // ratatui::init also installs a panic hook that restores the terminal.

@@ -12,6 +12,7 @@ fn client(server: &MockServer) -> JiraClient {
         email: "me@example.com".into(),
         api_token: "secret".into(),
         jql: None,
+        status_colors: Default::default(),
     })
     .unwrap()
 }

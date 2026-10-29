@@ -1,5 +1,7 @@
 //! Rendering of the App state with ratatui widgets.
 
+use std::collections::HashMap;
+
 use ansi_to_tui::IntoText;
 use chrono::{Duration, Local};
 use ratatui::Frame;
@@ -134,6 +136,8 @@ fn render_menu(frame: &mut Frame, area: Rect, menu: &mut Menu) {
 }
 
 fn render_stacked(frame: &mut Frame, top: Rect, middle: Rect, app: &mut App) {
+    let status_colors = &app.status_colors;
+    let issue_row = |issue: &Issue| issue_row(issue, status_colors);
     render_pane(
         frame,
         top,
@@ -176,7 +180,7 @@ fn render_split(frame: &mut Frame, area: Rect, app: &mut App) {
         // An issue with several MRs is shown on its first row only.
         let first = n == 0 || app.linked_rows[n - 1].0 != issue;
         issue_rows.push(match issue {
-            Some(issue) if first => issue_row(&issues[issue]),
+            Some(issue) if first => issue_row(&issues[issue], &app.status_colors),
             _ => blank(ISSUE_COLUMNS.len()),
         });
         mr_rows.push(match mr {
@@ -250,7 +254,7 @@ fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
                 let last = linked.get(n + 1).is_none_or(|&(i, m)| i != issue || m.is_none());
                 tree_mr_row(&mrs[mr], last, &app.reviews, &app.starting, &app.claude_sessions)
             }
-            (Some(issue), None) => lines(issue_row(&issues[issue])),
+            (Some(issue), None) => lines(issue_row(&issues[issue], &app.status_colors)),
             (None, None) => vec![Line::styled(OTHER_MRS, Style::new().fg(MUTED).bold())],
         });
         if mr.is_none() && linked.get(n + 1).is_some_and(|&(_, m)| m.is_some()) {
@@ -404,12 +408,13 @@ fn merge_request_row(
     ]
 }
 
-fn issue_row(issue: &Issue) -> Vec<Styled> {
+fn issue_row(issue: &Issue, status_colors: &HashMap<String, Color>) -> Vec<Styled> {
     let status_color = match issue.status_category {
         StatusCategory::Todo => Color::Blue,
         StatusCategory::InProgress => Color::Yellow,
         StatusCategory::Done => Color::Green,
     };
+    let status_color = status_colors.get(&issue.status.to_lowercase()).copied().unwrap_or(status_color);
     let priority_color = priority_color(issue.priority.as_deref());
     let priority = issue.priority.clone().unwrap_or_else(|| "-".into());
     vec![
@@ -921,7 +926,11 @@ mod tests {
         let mut done = issue("PAY-2");
         done.status = "Done".into();
         done.status_category = StatusCategory::Done;
-        app.on_msg(Msg::Jira(Ok(vec![urgent, done])));
+        let mut dev_done = issue("PAY-3");
+        dev_done.status = "Dev OK".into();
+        dev_done.status_category = StatusCategory::InProgress;
+        app.status_colors.insert("dev ok".into(), Color::Magenta);
+        app.on_msg(Msg::Jira(Ok(vec![urgent, done, dev_done])));
         let mut blocked = mr(2);
         blocked.merge_status = "conflict".into();
         blocked.pipeline = Some("failed".into());
@@ -935,6 +944,7 @@ mod tests {
         let buffer = draw_buffer(&mut app);
         assert_eq!(style_of(&buffer, "To Do").fg, Some(Color::Blue));
         assert_eq!(style_of(&buffer, "Done").fg, Some(Color::Green));
+        assert_eq!(style_of(&buffer, "Dev OK").fg, Some(Color::Magenta));
         assert_eq!(style_of(&buffer, "High").fg, Some(Color::Red));
         assert_eq!(style_of(&buffer, "mergeable").fg, Some(Color::Green));
         assert_eq!(style_of(&buffer, "conflict").fg, Some(Color::Red));

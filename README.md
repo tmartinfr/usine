@@ -32,6 +32,7 @@ url = "https://<site>.atlassian.net"   # Jira Cloud site
 email = "me@example.com"               # Atlassian account email
 api_token = "..."                      # https://id.atlassian.com > Security > API tokens
 # jql = "project = PAY AND assignee = currentUser()"   # optional, replaces the default query
+# status_colors = { "Dev Done" = "green", "Blocked" = "red" }   # optional, see Colors
 
 [gitlab]
 token = "glpat-..."                    # personal access token, read_api scope
@@ -180,7 +181,7 @@ Ascending order means:
 
 Colors help scanning the panes:
 
-- Jira status: blue for to do, yellow for in progress, green for done. Priority: red for high and above, yellow for medium, green or blue for low.
+- Jira status: blue for to do, yellow for in progress, green for done, as categorized in Jira. `status_colors` in the `[jira]` section sets the color of given statuses by name (case ignored): a color name (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `darkgray`, `white`, or `light` + a color name, e.g. `lightred`), a hex code (`#ff8800`) or a 256-color index (`208`). Priority: red for high and above, yellow for medium, green or blue for low.
 - GitLab status: green when the merge request can be merged, yellow while waiting (checks running, approvals missing), red when blocked (conflicts, failed pipeline, unresolved threads...). Draft merge requests are greyed out.
 - Pipeline: green when passed, yellow while running or waiting (pending, manual...), red when failed, grey when canceled or skipped.
 - Role: `reviewer` is highlighted in light blue, `author` is greyed out.
