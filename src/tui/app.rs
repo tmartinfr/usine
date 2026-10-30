@@ -277,6 +277,8 @@ pub struct App {
     pub claude_sessions: Vec<Session>,
     /// Menu opened by `c`.
     pub menu: Option<Menu>,
+    /// Issue shown by `v`, and how many lines its text is scrolled.
+    pub viewing: Option<(Box<Issue>, u16)>,
     /// Last captured screen of the Claude sessions, by session name.
     pub previews: HashMap<String, String>,
     /// Column being chosen to sort the focused pane on.
@@ -317,6 +319,7 @@ impl App {
             starting: Vec::new(),
             claude_sessions: Vec::new(),
             menu: None,
+            viewing: None,
             previews: HashMap::new(),
             sorting: None,
             confirm_quit: false,
@@ -347,6 +350,24 @@ impl App {
         let (issue, mr) = *self.linked_rows.get(self.linked_table.selected()?)?;
         let issue = issue.and_then(|i| self.jira.items().get(i));
         Some((issue, mr.and_then(|m| self.gitlab.items().get(m))))
+    }
+
+    /// The focused pane lists issues.
+    pub fn on_issues(&self) -> bool {
+        matches!(self.focus, Focus::Jira | Focus::Tree)
+    }
+
+    /// The issue of the focused Jira row, `v` shows it.
+    fn selected_issue(&self) -> Option<&Issue> {
+        match (self.view, self.focus) {
+            (View::Stacked, Focus::Jira) => self.jira.selected(),
+            (View::Split, Focus::Jira) => self.selected_link()?.0,
+            (View::Tree, Focus::Tree) => match self.selected_link()? {
+                (issue, None) => issue,
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// The MR the review keys and the Review pane act on.
@@ -454,6 +475,9 @@ impl App {
         if self.menu.is_some() {
             return self.on_menu_key(key);
         }
+        if self.viewing.is_some() {
+            return self.on_view_key(key);
+        }
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.confirm_quit = true;
@@ -518,6 +542,10 @@ impl App {
             KeyCode::Char('s') => {
                 self.sorting = Some(self.focused_sort().map_or(0, |sort| sort.column));
             }
+            KeyCode::Char('v') => match self.selected_issue() {
+                Some(issue) => self.viewing = Some((Box::new(issue.clone()), 0)),
+                None => self.message = Some(Notice::warning("Select a Jira issue to view it")),
+            },
             // Review keys act on the MR panes.
             KeyCode::Char('c') if self.on_mrs() => {
                 let Some(mr) = self.selected_mr().cloned() else { return Action::None };
@@ -557,7 +585,7 @@ impl App {
     }
 
     /// The focused pane lists MRs.
-    fn on_mrs(&self) -> bool {
+    pub fn on_mrs(&self) -> bool {
         !matches!(self.focus, Focus::Jira | Focus::Notifications)
     }
 
@@ -569,6 +597,26 @@ impl App {
         } else {
             self.menu = Some(Menu::new(mr, Some(conversations), 0));
         }
+    }
+
+    /// Keys while an issue is shown: scroll, open it, close it.
+    fn on_view_key(&mut self, key: KeyEvent) -> Action {
+        let Some((issue, scroll)) = &mut self.viewing else { return Action::None };
+        // Rendering stops the scroll at the end of the text.
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Action::Quit;
+            }
+            KeyCode::Char('j') | KeyCode::Down => *scroll = scroll.saturating_add(1),
+            KeyCode::Char('k') | KeyCode::Up => *scroll = scroll.saturating_sub(1),
+            KeyCode::Char(' ') | KeyCode::PageDown => *scroll = scroll.saturating_add(10),
+            KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+            KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+            KeyCode::Enter => return Action::Open(issue.url.clone()),
+            KeyCode::Char('q' | 'v') | KeyCode::Esc => self.viewing = None,
+            _ => {}
+        }
+        Action::None
     }
 
     /// Keys while the menu is open: Enter (or 1-3 in the main menu) chooses,
@@ -779,6 +827,7 @@ pub mod tests {
             priority: None,
             project: "PAY".into(),
             kind: "Task".into(),
+            description: String::new(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00+02:00").unwrap(),
             url: format!("https://example.atlassian.net/browse/{key}"),
         }
@@ -1011,6 +1060,26 @@ pub mod tests {
         assert!(app.starting.is_empty());
         assert_eq!(app.selected_review(), None);
         assert_eq!(app.message.as_ref().map(|m| m.text.as_str()), Some("Cannot review group/project!1: no local clone"));
+    }
+
+    #[test]
+    fn v_shows_the_selected_issue() {
+        let mut app = loaded_app();
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('v')));
+        let (viewed, scroll) = app.viewing.as_ref().unwrap();
+        assert_eq!((viewed.key.as_str(), *scroll), ("PAY-2", 0));
+        app.on_key(key(KeyCode::Char('j')));
+        assert_eq!(app.viewing.as_ref().unwrap().1, 1);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Open(issue("PAY-2").url));
+        // Keys act on the view until it is closed.
+        assert_eq!(app.jira.table.selected(), Some(1));
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.viewing.is_none() && !app.confirm_quit);
+
+        app.on_key(key(KeyCode::Tab));
+        app.on_key(key(KeyCode::Char('v')));
+        assert!(app.viewing.is_none() && app.message.is_some());
     }
 
     #[test]

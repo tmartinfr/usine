@@ -162,6 +162,7 @@ mod tests {
             priority: priority.map(Into::into),
             project: "PAY".into(),
             kind: "Bug".into(),
+            description: String::new(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00+02:00").unwrap(),
             url: format!("https://example.atlassian.net/browse/{key}"),
         }

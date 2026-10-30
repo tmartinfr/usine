@@ -9,6 +9,37 @@
         "priority": { "name": "High", "id": "2" },
         "project": { "key": "PAY", "name": "Payments" },
         "issuetype": { "name": "Bug" },
+        "description": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            { "type": "heading", "attrs": { "level": 1 }, "content": [{ "type": "text", "text": "Context" }] },
+            {
+              "type": "paragraph",
+              "content": [
+                { "type": "text", "text": "Retries never stop when the bank answers " },
+                { "type": "text", "text": "500", "marks": [{ "type": "code" }] },
+                { "type": "text", "text": "." },
+                { "type": "hardBreak" },
+                { "type": "text", "text": "See " },
+                { "type": "mention", "attrs": { "id": "abc", "text": "@Jane Doe" } },
+                { "type": "text", "text": "." }
+              ]
+            },
+            {
+              "type": "bulletList",
+              "content": [
+                { "type": "listItem", "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": "Stop after 3 retries" }] }] },
+                {
+                  "type": "listItem",
+                  "content": [
+                    { "type": "paragraph", "content": [{ "type": "text", "text": "Log " }, { "type": "inlineCard", "attrs": { "url": "https://example.com/runbook" } }] }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
         "updated": "2026-10-10T12:34:56.789+0200"
       }
     },
@@ -21,6 +52,7 @@
         "priority": null,
         "project": { "key": "OPS", "name": "Operations" },
         "issuetype": { "name": "Task" },
+        "description": null,
         "updated": "2026-10-01T08:00:00.000+0000"
       }
     }

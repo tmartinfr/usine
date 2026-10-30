@@ -91,6 +91,52 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     if let Some(menu) = &mut app.menu {
         render_menu(frame, frame.area(), menu);
     }
+    if let Some((issue, scroll)) = &mut app.viewing {
+        render_issue(frame, frame.area(), issue, scroll, &app.status_colors);
+    }
+}
+
+/// The issue shown by `v`, centered over the panes.
+fn render_issue(
+    frame: &mut Frame,
+    area: Rect,
+    issue: &Issue,
+    scroll: &mut u16,
+    status_colors: &HashMap<String, Color>,
+) {
+    let cells = issue_row(issue, status_colors);
+    let (status, priority) = (&cells[1], &cells[2]);
+    let mut text = vec![
+        Line::from(issue.title.clone()).bold(),
+        Line::from(vec![
+            Span::styled(status.0.clone(), status.1),
+            Span::styled("  priority ", Style::new().fg(MUTED)),
+            Span::styled(priority.0.clone(), priority.1),
+            Span::styled(format!("  {}", issue.kind), Style::new().fg(MUTED)),
+        ]),
+        Line::default(),
+    ];
+    match issue.description.as_str() {
+        "" => text.push(Line::from("No description.").fg(MUTED)),
+        description => text.extend(description.lines().map(|line| Line::from(line.to_string()))),
+    }
+    let width = area.width.saturating_sub(4).min(100);
+    let height = area.height.saturating_sub(4);
+    let popup = Rect {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+    };
+    let title = Span::styled(format!(" {} ", issue.key), Style::new().fg(ACCENT).bold());
+    let block = pane_block(vec![title], ACCENT);
+    let inner = block.inner(popup);
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+    // Keys scroll freely: stop at the last screen of text.
+    let last = paragraph.line_count(inner.width).saturating_sub(inner.height as usize);
+    *scroll = (*scroll).min(last as u16);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(paragraph.scroll((*scroll, 0)).block(block), popup);
 }
 
 /// The menu of `c`, centered over the panes.
@@ -715,10 +761,13 @@ const SORT_KEYS: [(&str, &str); 3] = [
 
 const MENU_KEYS: [(&str, &str); 3] = [("j/k", "move"), ("Enter", "choose"), ("Esc", "back")];
 
-const KEYS: [(&str, &str); 12] = [
+const VIEW_KEYS: [(&str, &str); 3] = [("j/k/Space", "scroll"), ("Enter", "open"), ("Esc", "close")];
+
+const KEYS: [(&str, &str); 13] = [
     ("Tab", "switch"),
     ("j/k", "move"),
     ("Enter", "open"),
+    ("v", "issue"),
     ("s", "sort"),
     ("r", "refresh"),
     ("a", "attach"),
@@ -748,13 +797,21 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                     (vec![label], &SORT_KEYS[..])
                 }
                 (None, Some(_)) => (vec![Span::raw(" ")], &MENU_KEYS[..]),
+                (None, None) if app.viewing.is_some() => (vec![Span::raw(" ")], &VIEW_KEYS[..]),
                 (None, None) => (vec![Span::raw(" ")], &KEYS[..]),
             };
-            for (key, action) in keys {
+            // Keys of the other kind of pane are left out.
+            let hidden = |key: &str| match key {
+                "v" => !app.on_issues(),
+                "a" | "x" | "c" => !app.on_mrs(),
+                _ => false,
+            };
+            for (key, action) in keys.iter().filter(|(key, _)| !hidden(key)) {
                 spans.push(Span::styled(*key, Style::new().fg(ACCENT).bold()));
                 spans.push(Span::styled(format!(": {action}  "), Style::new().fg(MUTED)));
             }
-            if let Some(at) = app.last_update.filter(|_| app.sorting.is_none() && app.menu.is_none()) {
+            let main_keys = app.sorting.is_none() && app.menu.is_none() && app.viewing.is_none();
+            if let Some(at) = app.last_update.filter(|_| main_keys) {
                 spans.push(Span::styled(format!("updated {}", at.format("%H:%M")), Style::new().fg(MUTED)));
             }
             Line::from(spans)
@@ -903,6 +960,28 @@ mod tests {
         app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
         assert!(!draw(&mut app).contains("working on it"));
+    }
+
+    #[test]
+    fn renders_the_viewed_issue_and_stops_scrolling_at_its_end() {
+        let mut app = App::new(true, false, "config.toml".into());
+        let mut viewed = issue("PAY-1");
+        viewed.description = (1..=100).map(|n| format!("line {n}")).collect::<Vec<_>>().join("\n");
+        app.viewing = Some((Box::new(viewed), 0));
+        let screen = draw(&mut app);
+        assert!(screen.contains(" PAY-1 "), "{screen}");
+        assert!(screen.contains("Summary of PAY-1"), "{screen}");
+        assert!(screen.contains("To Do  priority -  Task"), "{screen}");
+        assert!(screen.contains("line 1 "), "{screen}");
+        assert!(screen.contains("Esc: close"), "{screen}");
+
+        app.viewing.as_mut().unwrap().1 = u16::MAX;
+        let screen = draw(&mut app);
+        assert!(screen.contains("line 100") && !screen.contains("line 1 "), "{screen}");
+        assert!(app.viewing.as_ref().unwrap().1 < 100);
+
+        app.viewing.as_mut().unwrap().0.description.clear();
+        assert!(draw(&mut app).contains("No description."));
     }
 
     #[test]

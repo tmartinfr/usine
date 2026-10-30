@@ -100,6 +100,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `g` / `Home`            | First row                                           |
 | `G` / `End`             | Last row                                            |
 | `Enter`                 | Open the selected issue or merge request in your browser (in Notifications: the one the change is about) |
+| `v`                     | Show the selected Jira issue: summary, status, priority, type and description (see below) |
 | `s`                     | Choose the column to sort the pane on (see below)   |
 | `r`                     | Refresh both panes now                              |
 | `a`                     | Attach to the review of the selected merge request (merge request panes) |
@@ -157,7 +158,7 @@ From the split view, press `w` to show the issues and their merge requests in a 
 - The merge requests share the issue columns: the merge request under `KEY`, its merge status under `STATUS`, its pipeline under `PRIORITY`, its last update under `UPDATED`, and its role, title and worktree under `SUMMARY`. Each group of merge requests starts with the names of their columns, showing the GitLab sort.
 - Merge requests are linked to issues as in the split view. A merge request mentioning several listed issues is shown below each of them.
 - The merge requests linked to none of the listed issues come last, below the `MRs of no listed issue` row.
-- `Enter` opens the issue or merge request of the selected row. `c`, `a` and `x` act on the selected merge request, which the Review pane follows.
+- `Enter` opens the issue or merge request of the selected row. `v` shows the issue of an issue row. `c`, `a` and `x` act on the selected merge request, which the Review pane follows.
 - `s` sorts the issues. The merge requests follow their issue, in the order of the GitLab sort, which can be changed from the stacked view.
 
 #### Sorting
@@ -203,7 +204,11 @@ While the terminal interface runs, usine sends a desktop notification when, at a
 
 Changes seen together are grouped in one notification; each change is also listed in the Notifications pane (`n`). Nothing is sent for the first load, nor for a pane whose previous refresh failed. Notifications use `notify-send` on Linux and `osascript` on macOS; when they are not available, nothing is sent.
 
-The title of a pane shows `(refreshing)` while new data is being loaded, and the bottom line shows the time of the last successful update. Messages (e.g. why a review could not start) replace the key help until the next key press.
+#### Viewing an issue
+
+`v` opens the selected Jira issue over the panes: its summary, status, priority and type, then its description as plain text (headings start with `#`, list items with `-`, links show their URL; images and attachments are left out). Scroll with `j` / `k`, `Space` / `PageDown`, `PageUp` and `g`; `Enter` opens the issue in your browser; `Esc`, `q` or `v` closes it. The description is the one of the last refresh.
+
+The title of a pane shows `(refreshing)` while new data is being loaded, and the bottom line shows the time of the last successful update. The key help lists the keys of the focused pane. Messages (e.g. why a review could not start) replace the key help until the next key press.
 
 ### Reviewing a merge request with Claude
 
@@ -285,12 +290,13 @@ JSON output (one object per issue):
   "priority": "High",
   "project": "PAY",
   "kind": "Bug",
+  "description": "Retries never stop when the bank answers 500.\n\n- Stop after 3 retries",
   "updated": "2026-10-10T12:34:56.789+02:00",
   "url": "https://<site>.atlassian.net/browse/PAY-123"
 }
 ```
 
-`status_category` is `todo`, `in_progress` or `done`. `priority` is `null` when the issue has none.
+`status_category` is `todo`, `in_progress` or `done`. `priority` is `null` when the issue has none. `description` is plain text as in [Viewing an issue](#viewing-an-issue), empty when the issue has none.
 
 ### GitLab: list my open merge requests
 

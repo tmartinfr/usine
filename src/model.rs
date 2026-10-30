@@ -31,6 +31,8 @@ pub struct Issue {
     pub priority: Option<String>,
     pub project: String,
     pub kind: String,
+    /// Plain text, empty when the issue has none.
+    pub description: String,
     pub updated: DateTime<FixedOffset>,
     pub url: String,
 }

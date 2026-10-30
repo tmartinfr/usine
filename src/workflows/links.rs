@@ -65,6 +65,7 @@ mod tests {
             priority: None,
             project: "PAY".into(),
             kind: "Task".into(),
+            description: String::new(),
             updated: DateTime::parse_from_rfc3339("2026-10-10T12:00:00Z").unwrap(),
             url: format!("https://example.atlassian.net/browse/{key}"),
         }
