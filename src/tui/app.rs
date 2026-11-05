@@ -255,7 +255,11 @@ pub enum Msg {
 }
 
 pub struct App {
+    /// Issues shown: those of `all_issues`, without the Testing ones unless `show_testing`.
     pub jira: Pane<Issue>,
+    /// Issues of the last successful Jira fetch.
+    pub all_issues: Vec<Issue>,
+    pub show_testing: bool,
     pub gitlab: Pane<MergeRequest>,
     pub focus: Focus,
     pub config_path: String,
@@ -300,6 +304,8 @@ impl App {
     pub fn new(jira_configured: bool, gitlab_configured: bool, config_path: String) -> Self {
         Self {
             jira: Pane::new(jira_configured, ISSUE_DEFAULT_SORT),
+            all_issues: Vec::new(),
+            show_testing: false,
             gitlab: Pane::new(gitlab_configured, MR_DEFAULT_SORT),
             focus: Focus::Jira,
             config_path,
@@ -384,13 +390,16 @@ impl App {
         let selection = self.linked_selection();
         match msg {
             Msg::Jira(result) => {
-                if let (Content::Loaded(old), Ok(new)) = (&self.jira.content, &result) {
-                    let changes = issue_changes(old, new);
-                    self.notify(changes);
-                }
-                if result.is_ok() {
+                if let Ok(new) = &result {
+                    // Hidden issues are compared too: their changes are still notified.
+                    if matches!(self.jira.content, Content::Loaded(_)) {
+                        let changes = issue_changes(&self.all_issues, new);
+                        self.notify(changes);
+                    }
                     self.last_update = Some(Local::now());
+                    self.all_issues = new.clone();
                 }
+                let result = result.map(|_| self.visible_issues());
                 self.jira.set_result(result);
             }
             Msg::Gitlab(result) => {
@@ -430,6 +439,29 @@ impl App {
             Msg::Notice(notice) => self.message = Some(notice),
         }
         // New items, or review states for the R column.
+        self.sort_panes();
+        self.relink(selection);
+    }
+
+    /// Issues of `all_issues` to show, in their fetched order.
+    fn visible_issues(&self) -> Vec<Issue> {
+        let shown = |i: &&Issue| self.show_testing || !i.status.eq_ignore_ascii_case("testing");
+        self.all_issues.iter().filter(shown).cloned().collect()
+    }
+
+    /// Shows or hides the Testing issues, keeping the selected issue selected.
+    fn toggle_testing(&mut self) {
+        self.show_testing = !self.show_testing;
+        if !matches!(self.jira.content, Content::Loaded(_)) {
+            return;
+        }
+        let selection = self.linked_selection();
+        let url = self.jira.selected().map(|i| i.url.clone());
+        let issues = self.visible_issues();
+        let found = url.and_then(|url| issues.iter().position(|i| i.url == url));
+        let len = issues.len();
+        self.jira.content = Content::Loaded(issues);
+        select_or_clamp(&mut self.jira.table, found, len);
         self.sort_panes();
         self.relink(selection);
     }
@@ -474,6 +506,7 @@ impl App {
             }
             KeyCode::Char('r') => return Action::Refresh,
             KeyCode::Char('l') => self.show_calls = !self.show_calls,
+            KeyCode::Char('t') => self.toggle_testing(),
             KeyCode::Char('n') => {
                 self.show_notifications = !self.show_notifications;
                 if self.show_notifications {
@@ -853,6 +886,25 @@ pub mod tests {
         app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), issue("PAY-2"), issue("PAY-3")])));
         app.on_msg(Msg::Gitlab(Ok(vec![mr(1), mr(2)])));
         app
+    }
+
+    #[test]
+    fn testing_issues_hidden_until_t() {
+        let mut app = App::new(true, true, "config.toml".into());
+        let testing = Issue { status: "Testing".into(), ..issue("PAY-2") };
+        app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), testing.clone(), issue("PAY-3")])));
+        let keys = |app: &App| app.jira.items().iter().map(|i| i.key.clone()).collect::<Vec<_>>();
+        assert_eq!(keys(&app), ["PAY-1", "PAY-3"]);
+        app.on_key(key(KeyCode::Char('j')));
+        app.on_key(key(KeyCode::Char('t')));
+        assert_eq!(keys(&app).len(), 3);
+        assert_eq!(app.jira.selected().unwrap().key, "PAY-3");
+        app.on_key(key(KeyCode::Char('t')));
+        // A hidden issue leaving Testing is notified and shown.
+        let done = Issue { status: "Done".into(), ..testing };
+        app.on_msg(Msg::Jira(Ok(vec![issue("PAY-1"), done, issue("PAY-3")])));
+        assert_eq!(keys(&app).len(), 3);
+        assert_eq!(app.notified.len(), 1);
     }
 
     #[test]

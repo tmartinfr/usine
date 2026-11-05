@@ -110,6 +110,7 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 | `w`                     | Switch between the stacked and split views (see below) |
 | `n`                     | Show the Notifications pane and focus it, or hide it |
 | `l`                     | Show or hide the API calls pane                     |
+| `t`                     | Show or hide the Jira issues in the Testing status (hidden at start) |
 | `q` / `Esc`             | Quit, after confirmation: `y` (or `q` again) quits, any other key cancels |
 | `Ctrl-C`                | Quit immediately                                    |
 

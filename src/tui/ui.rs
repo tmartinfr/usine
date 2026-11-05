@@ -629,7 +629,7 @@ const MENU_KEYS: [(&str, &str); 3] = [("j/k", "move"), ("Enter", "choose"), ("Es
 
 const VIEW_KEYS: [(&str, &str); 3] = [("j/k/Space", "scroll"), ("Enter", "open"), ("Esc", "close")];
 
-const KEYS: [(&str, &str); 13] = [
+const KEYS: [(&str, &str); 14] = [
     ("Tab", "switch"),
     ("j/k", "move"),
     ("Enter", "open"),
@@ -640,6 +640,7 @@ const KEYS: [(&str, &str); 13] = [
     ("x", "close"),
     ("c", "claude"),
     ("w", "view"),
+    ("t", "testing"),
     ("n", "notifs"),
     ("l", "calls"),
     ("q", "quit"),
