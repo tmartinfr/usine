@@ -80,7 +80,7 @@ async fn follows_pagination_with_token_and_filters() {
 }
 
 #[tokio::test]
-async fn lists_merge_requests_to_review_except_approved_ones() {
+async fn lists_merge_requests_to_review_except_approved_and_draft_ones() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v4/user"))
@@ -88,6 +88,8 @@ async fn lists_merge_requests_to_review_except_approved_ones() {
         .expect(1)
         .mount(&server)
         .await;
+    let mut draft = raw_mr(4);
+    draft["draft"] = json!(true);
     // Most specific first: wiremock uses the first mock that matches.
     Mock::given(method("GET"))
         .and(path("/api/v4/merge_requests"))
@@ -101,11 +103,11 @@ async fn lists_merge_requests_to_review_except_approved_ones() {
         .and(path("/api/v4/merge_requests"))
         .and(query_param("state", "opened"))
         .and(query_param("scope", "reviews_for_me"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!([raw_mr(1), raw_mr(2), raw_mr(3)])))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([raw_mr(1), raw_mr(2), raw_mr(3), draft])))
         .expect(1)
         .mount(&server)
         .await;
-    // No pipeline lookup for the approved MR.
+    // No pipeline lookup for the approved and draft MRs.
     for iid in [1, 3] {
         Mock::given(method("GET"))
             .and(path(format!("/api/v4/projects/100/merge_requests/{iid}")))

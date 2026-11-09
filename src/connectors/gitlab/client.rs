@@ -43,8 +43,8 @@ impl GitlabClient {
         self.with_pipelines(raw, Role::Author).await
     }
 
-    /// Returns at most `limit` open MRs the token owner is a reviewer of and has
-    /// not approved, most recently updated first.
+    /// Returns at most `limit` open, non-draft MRs the token owner is a reviewer
+    /// of and has not approved, most recently updated first.
     pub async fn merge_requests_to_review(&self, limit: usize) -> Result<Vec<MergeRequest>> {
         let username = self.current_username().await?;
         let to_review = [("scope", "reviews_for_me")];
@@ -57,6 +57,7 @@ impl GitlabClient {
         )?;
         let mut raw: Vec<RawMergeRequest> = raw
             .into_iter()
+            .filter(|mr| !mr.draft)
             .filter(|mr| !approved.iter().any(|a| (a.project_id, a.iid) == (mr.project_id, mr.iid)))
             .collect();
         raw.truncate(limit);
