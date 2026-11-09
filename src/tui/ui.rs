@@ -30,7 +30,7 @@ const MUTED: Color = Color::DarkGray;
 type Styled = (String, Style);
 
 /// Columns of the MRs in the split view, as indexes into `MR_COLUMNS`.
-const SPLIT_MR_CELLS: [usize; 8] = [0, 1, 2, 3, 4, 5, 7, 8];
+const SPLIT_MR_CELLS: [usize; 9] = [0, 1, 2, 3, 4, 5, 6, 8, 9];
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     // The bottom panes show the sessions of the selected MR, if any.
@@ -311,6 +311,7 @@ fn merge_request_row(
         marker(review_state(reviews, starting, mr)),
         marker(claude_state(claude, mr)),
         role,
+        (mr.author.clone(), Style::new()),
         (mr.reference.clone(), Style::new().bold()),
         (mr.merge_status.clone(), Style::new().fg(merge_status_color(&mr.merge_status))),
         pipeline_cell(mr.pipeline.as_deref()),
@@ -701,7 +702,7 @@ mod tests {
     use crate::tui::app::tests::{issue, mr, session, split_app};
 
     fn draw_buffer(app: &mut App) -> Buffer {
-        let mut terminal = Terminal::new(TestBackend::new(130, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(150, 24)).unwrap();
         terminal.draw(|frame| render(frame, app)).unwrap();
         terminal.backend().buffer().clone()
     }
@@ -746,7 +747,7 @@ mod tests {
         let screen = draw(&mut app);
 
         assert!(screen.contains("Jira issues (2)"), "{screen}");
-        assert!(screen.contains("R  C  ROLE ^  MR"), "{screen}");
+        assert!(screen.contains("R  C  ROLE ^  AUTHOR  MR"), "{screen}");
         assert!(screen.contains("WORKTREE       TITLE"), "{screen}");
         assert!(screen.contains("/srv/api-feat  MR 42"), "{screen}");
 
@@ -754,9 +755,9 @@ mod tests {
         app.on_msg(Msg::ClaudeSessions(vec![claude(false)]));
         // The C column marks the Claude session.
         let buffer = draw_buffer(&mut app);
-        assert_eq!(style_of(&buffer, "*  author  group/project!42").fg, Some(Color::Green));
+        assert_eq!(style_of(&buffer, "*  author  me      group/project!42").fg, Some(Color::Green));
         app.on_msg(Msg::ClaudeSessions(vec![claude(true)]));
-        assert_eq!(style_of(&draw_buffer(&mut app), "*  author  group/project!42").fg, Some(Color::Blue));
+        assert_eq!(style_of(&draw_buffer(&mut app), "*  author  me      group/project!42").fg, Some(Color::Blue));
         assert!(screen.contains("GitLab MRs (1)"), "{screen}");
         assert!(screen.contains("KEY    STATUS ^  PRIORITY  UPDATED     SUMMARY"), "{screen}");
         assert!(screen.contains("PAY-2  To Do     -         2026-10-10  Summary of PAY-2"), "{screen}");
@@ -800,7 +801,7 @@ mod tests {
 
         let screen = draw(&mut app);
         assert!(screen.contains("Review group/project!1 [running]"), "{screen}");
-        assert!(screen.contains("*     author  group/project!1"), "{screen}");
+        assert!(screen.contains("*     author  me      group/project!1"), "{screen}");
         // The end of the session screen is shown.
         assert!(screen.contains("claude line 40"), "{screen}");
         assert!(!screen.contains("claude line 1 "), "{screen}");
@@ -860,7 +861,7 @@ mod tests {
 
         app.starting.push("group/project!1".into());
         let screen = draw(&mut app);
-        assert!(screen.contains("~     author  group/project!1"), "{screen}");
+        assert!(screen.contains("~     author  me      group/project!1"), "{screen}");
         assert!(screen.contains("Preparing the worktree"), "{screen}");
     }
 
@@ -897,8 +898,8 @@ mod tests {
         assert_eq!(style_of(&buffer, "failed").fg, Some(Color::Red));
         assert_eq!(style_of(&buffer, "Draft: wip").fg, Some(MUTED));
         assert_eq!(style_of(&buffer, "reviewer").fg, Some(Color::LightBlue));
-        assert_eq!(style_of(&buffer, "*     author    group/project!1").fg, Some(Color::Green));
-        assert_eq!(style_of(&buffer, "*     author    group/project!2").fg, Some(Color::Blue));
+        assert_eq!(style_of(&buffer, "*     author    me      group/project!1").fg, Some(Color::Green));
+        assert_eq!(style_of(&buffer, "*     author    me      group/project!2").fg, Some(Color::Blue));
         assert_eq!(style_of(&buffer, "KEY").fg, Some(Color::Yellow));
         // Focused pane title uses the accent color.
         assert_eq!(style_of(&buffer, "Jira issues").fg, Some(ACCENT));
@@ -951,7 +952,7 @@ mod tests {
         assert!(screen.contains("GitLab MRs (4)"), "{screen}");
         assert!(!screen.contains("Other"), "{screen}");
         assert!(screen.contains("w: view"), "{screen}");
-        assert!(line("PAY-1 ").contains("author  group/project!1 "), "{screen}");
+        assert!(line("PAY-1 ").contains("author  me      group/project!1 "), "{screen}");
         // Second MR of PAY-1: the issue cells are blank.
         assert!(!line("group/project!3").contains("PAY-"), "{screen}");
         assert!(!line("PAY-2 ").contains("group/project"), "{screen}");

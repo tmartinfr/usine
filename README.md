@@ -68,7 +68,7 @@ usine tui
 The screen shows these panes, one above the other:
 
 - **Jira issues**: your issues, using the same query as `usine jira issues` (the `jql` from your config, or the default).
-- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `R` column shows `*` when the merge request has a review session and `~` while one is starting. The `C` column shows `*` when it has a Claude session started with `c` (see [Claude menu](#claude-menu)). The `WORKTREE` column shows the local worktree that has the source branch of the merge request checked out (see [Worktrees](#worktrees)).
+- **GitLab MRs**: your open merge requests, as with `usine gitlab mrs`, and the open merge requests you are a reviewer of and have not approved yet (like the review requests of the GitLab merge requests dashboard). The `ROLE` column tells them apart: `author` or `reviewer` (a merge request you authored and also review shows as `author`). The `AUTHOR` column shows the GitLab username of the author. The `R` column shows `*` when the merge request has a review session and `~` while one is starting. The `C` column shows `*` when it has a Claude session started with `c` (see [Claude menu](#claude-menu)). The `WORKTREE` column shows the local worktree that has the source branch of the merge request checked out (see [Worktrees](#worktrees)).
 - **Review**: the live screen of the Claude review of the selected merge request, shown only while it has a review (or one is starting). When the merge request also has a Claude session started with `c`, the **Claude** pane shows its live screen next to it.
 - **Notifications** (hidden by default, press `n` to show or hide it): the changes usine notified (see [Notifications](#notifications)), latest at the bottom, with their time. The last 500 are kept. Showing it moves the focus to it with the latest change selected; `Enter` opens the issue or merge request the change is about (for a finished review, its merge request when still listed).
 - **API calls** (hidden by default, press `l` to show or hide it): the requests usine made to Jira and GitLab, latest at the bottom, with their time, method, HTTP status (green when successful, red otherwise, or the error when no response was received), duration and URL. The last 500 calls are kept. Credentials are never shown.
@@ -82,9 +82,9 @@ Up to 100 items are shown per pane. Data is loaded in the background when the in
 |PAY-123  In Progress  High      2026-10-10  Fix the payment retry loop        |
 +-----------------------------------------------------------------------------+
 + GitLab MRs (2) -------------------------------------------------------------+
-|R  C  ROLE ^    MR                    STATUS        PIPELINE  UPDATED     ...|
-|*  *  author    group/backend/api!42  not_approved  running   2026-10-10  ...|
-|      reviewer  group/web!310         mergeable     success   2026-10-09  -  |
+|R  C  ROLE ^    AUTHOR  MR                    STATUS        PIPELINE      ...|
+|*  *  author    jdoe    group/backend/api!42  not_approved  running       ...|
+|      reviewer  asmith  group/web!310         mergeable     success       ...|
 +-----------------------------------------------------------------------------+
 + Review group/backend/api!42 [running] ++ Claude [running]  c: attach --------+
 |* Reading the diff...                 ||> Fix the retry loop                 |
@@ -120,12 +120,12 @@ Press `w` to show each Jira issue next to its merge requests, and `w` again to c
 
 ```
 + Jira issues (3) -------------------------++ GitLab MRs (4) ---------------------------------------+
-|KEY      STATUS ^     SUMMARY             ||R  C  ROLE      MR                    STATUS      ...|
-|PAY-123  In Progress  Fix the payment ... ||*  *  author    group/backend/api!42  not_approved...|
-|                                          ||      author    group/backend/api!45  mergeable   ...|
+|KEY      STATUS ^     SUMMARY             ||R  C  ROLE      AUTHOR  MR                    STATUS...|
+|PAY-123  In Progress  Fix the payment ... ||*  *  author    jdoe    group/backend/api!42  not_ap...|
+|                                          ||      author    jdoe    group/backend/api!45  mergea...|
 |OPS-7    To Do        Rotate staging c... ||                                                       |
-|PAY-130  Testing      Drop unused fiel... ||      reviewer  group/web!310         mergeable   ...|
-|                                          ||      author    group/infra!7         draft_status...|
+|PAY-130  Testing      Drop unused fiel... ||      reviewer  asmith  group/web!310         mergea...|
+|                                          ||      author    jdoe    group/infra!7         draft_...|
 +------------------------------------------++-------------------------------------------------------+
 ```
 
@@ -146,6 +146,7 @@ Ascending order means:
 - `PRIORITY`: most important first, issues without priority last.
 - `R`: running reviews, starting, finished, then merge requests without review.
 - `ROLE`: authored first, then those you review.
+- `AUTHOR`: alphabetical, ignoring case.
 - `MR`: by project, then by number.
 - `STATUS` (GitLab): mergeable, waiting, blocked, draft, then by status name.
 - `PIPELINE`: passed, in progress or waiting, failed, canceled or skipped, then merge requests without pipeline.
